@@ -22,15 +22,16 @@ LDFLAGS := -static
 LOADER_LOAD_ADDR := 0x20000000
 
 # Source files
-TARGET_SRCS := src/target_app.c src/dumper.c
-LOADER_SRCS := src/loader.c
+TARGET_SRCS  := src/target_app.c src/dumper.c
+LOADER_SRCS  := src/loader.c
+LIBCKPT_SRCS := src/libckpt.c src/dumper.c
 
 # Output directory
 BUILD_DIR := build
 
 .PHONY: all clean run_demo verify_dump disasm_target disasm_loader
 
-all: $(BUILD_DIR)/target_app $(BUILD_DIR)/loader
+all: $(BUILD_DIR)/target_app $(BUILD_DIR)/loader $(BUILD_DIR)/libckpt.so
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -62,6 +63,20 @@ $(BUILD_DIR)/loader: $(LOADER_SRCS) src/checkpoint.h | $(BUILD_DIR)
 	@echo "Built loader at $@"
 	@echo "Loader load address check:"
 	@readelf -l $@ | grep LOAD | head -3
+
+# --- Generic LD_PRELOAD checkpoint library ---------------------------------
+# Shared library: requires -fPIC on all compiled objects.
+# dumper.c is recompiled as PIC separately (dumper_pic.o).
+$(BUILD_DIR)/dumper_pic.o: src/dumper.c src/checkpoint.h src/dumper.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -fPIC -c -o $@ src/dumper.c
+
+$(BUILD_DIR)/libckpt.so: src/libckpt.c $(BUILD_DIR)/dumper_pic.o src/checkpoint.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -fPIC -shared \
+		-o $@ src/libckpt.c $(BUILD_DIR)/dumper_pic.o \
+		-ldl -lpthread
+	@echo "Built libckpt.so at $@"
+	@echo "Usage: CKPT_OUTPUT=dump.ckpt LD_PRELOAD=$@ ./your_app"
+	@echo "       kill -SIGUSR1 <pid>  (or set CKPT_AFTER_NS=<nanoseconds>)"
 
 # --- Demo: full round-trip ------------------------------------------------
 DUMP_FILE := /tmp/test.ckpt
