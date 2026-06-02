@@ -1,1 +1,0 @@
-docker run --privileged --rm -it -v $(pwd)/Tailbench:/tailbench tailbench_compiler /bin/bash -c "cd /tailbench/tailbench/silo && LD_LIBRARY_PATH=./third-party/lz4 TBENCH_QPS=10 TBENCH_MAXREQS=10 TBENCH_WARMUPREQS=10 setarch x86_64 -R ./out-perf.masstree/benchmarks/dbtest_integrated --bench tpcc --num-threads 1 --scale-factor 1 --retry-aborted-transactions --ops-per-worker 1000"

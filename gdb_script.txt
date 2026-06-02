@@ -1,5 +1,0 @@
-set pagination off
-run
-bt
-info registers
-x/i $rip
