@@ -23,11 +23,12 @@ echo "[*] Recompiling Tailbench with updated dumper..."
 cd /tailbench/tailbench/harness && make
 cd /tailbench/tailbench/silo && ./build.sh
 
-echo "[*] Launching target app via Intel SDE (Spoofing Westmere CPU without AVX)..."
+echo "[*] Launching target app via Intel SDE (Spoofing Westmere, SSE2-only glibc paths)..."
 LD_LIBRARY_PATH=./third-party/lz4 \
 TBENCH_QPS=10 \
 TBENCH_MAXREQS=10 \
 TBENCH_WARMUPREQS=10 \
+GLIBC_TUNABLES="glibc.cpu.hwcaps=-SSE4_2,-SSE4_1,-SSSE3,-AVX,-AVX2,-AVX512F" \
 setarch x86_64 -R /tailbench/sde/sde64 -wsm -- ./out-perf.masstree/benchmarks/dbtest_integrated --bench tpcc --num-threads 1 --scale-factor 1 --retry-aborted-transactions --ops-per-worker 1000
 '
 
