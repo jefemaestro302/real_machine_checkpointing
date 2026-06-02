@@ -10,8 +10,7 @@ By dynamically capturing all `vma` segments, segment selectors, CPU registers, a
 - `src/dumper.c` / `src/dumper_asm.S`: Handles dumping the exact CPU register state and memory maps to disk.
 - `src/loader.c`: A statically linked loader used by gem5 (or natively) to load the checkpoint back into memory, properly set `fs_base`, restore registers, and jump directly to the target program's execution without using traditional `execve` boundaries.
 - `run_example.sh` & `example.c`: A self-contained, simple local example.
-- `Tailbench/`: Contains all our modifications to Tailbench to cleanly integrate this checkpointing logic directly into the benchmark harness.
-- `run_checkpoint_sde.sh` & `run_gem5.sh`: Wrappers for safely dumping Tailbench benchmarks via Intel SDE (to mask out unsupported AVX instructions) and then simulating them inside gem5.
+- `run_gem5.sh`: Wrapper for simulating dumped checkpoints inside gem5.
 
 ---
 
@@ -33,29 +32,28 @@ To understand exactly how this works without involving gem5, check out the provi
 
 ---
 
-## 2. Using it in gem5 (Tailbench)
+## 2. Using it in gem5
 
-For massive workloads like Tailbench, we have cleanly integrated the checkpointing directly into the benchmark harness (`tbench_server_integrated.cpp`). You do **not** need `LD_PRELOAD` for integrated Tailbench apps because the dumper is dynamically linked directly into the harness!
+You can use `libckpt.so` to checkpoint any application, and then load it into gem5.
 
-1. **Setup and compile Tailbench (via Docker to avoid host dependency issues):**
-   ```bash
-   ./setup_tailbench.sh
-   ```
+**Important Note on AVX/SSE Instructions:** 
+gem5's SE mode lacks support for many modern x86 instructions (like AVX2 `PBROADCASTB` or AVX-512). If you generate a checkpoint natively on a modern host, `glibc` will dynamically resolve its optimized routines (e.g., `strlen`, `memcpy`) to use AVX instructions. When you restore this in gem5, gem5 will crash.
+To circumvent this, you must run your application under **Intel SDE** and spoof an older CPU (like Westmere) when taking the checkpoint:
 
-2. **Generate the checkpoint (e.g., for Silo):**
-   *Note: We run this through Intel SDE and set GLIBC_TUNABLES to prevent the host's `glibc` from utilizing AVX/SSE4.1 instructions, which gem5's SE mode lacks support for.*
-   ```bash
-   ./run_checkpoint_sde.sh
-   ```
-   *This outputs `tailbench_dump.ckpt` inside `Tailbench/tailbench/silo/`.*
+```bash
+GLIBC_TUNABLES="glibc.cpu.hwcaps=-SSE4_2,-SSE4_1,-SSSE3,-AVX,-AVX2,-AVX512F" \
+setarch x86_64 -R /path/to/sde64 -wsm -- \
+  env LD_PRELOAD=./build/libckpt.so CKPT_AT_SYMBOL=my_function \
+  ./my_application
+```
 
-3. **Restore the checkpoint inside gem5:**
-   Use the provided helper script, which sets up the correct memory sizing and CPU configurations.
-   ```bash
-   ./run_gem5.sh Tailbench/tailbench/silo/tailbench_dump.ckpt
-   ```
+**Simulate in gem5:**
+Once you have the `.ckpt` file (generated with AVX disabled), run it in gem5 using our helper script:
+```bash
+./run_gem5.sh my_application_dump.ckpt
+```
 
-You should see gem5 natively jump straight to the ROI (Region of Interest) and begin simulating:
+You should see gem5 natively jump straight to your application's state and begin simulating:
 ```
 [loader] Setting FS base and jumping to ROI
 ```
