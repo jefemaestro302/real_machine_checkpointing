@@ -1,3 +1,9 @@
 build/
 *.ckpt
 Tailbench/
+*.bin
+print_regions
+print_regs
+print_regions.c
+print_regs.c
+fix_loader.patch

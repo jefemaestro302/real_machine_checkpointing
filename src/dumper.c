@@ -85,13 +85,18 @@ __attribute__((naked)) int ckpt_dump(const char *path)
         "movw %gs, 184(%rsp)\n\t"
         
         /* fs_base, gs_base */
-        "rdfsbase %rax\n\t"
-        "movq %rax, 192(%rsp)\n\t"
-        "rdgsbase %rax\n\t"
-        "movq %rax, 200(%rsp)\n\t"
+        "mov $158, %rax\n\t"
+        "mov $0x1003, %rdi\n\t"
+        "lea 192(%rsp), %rsi\n\t"
+        "syscall\n\t"
+
+        "mov $158, %rax\n\t"
+        "mov $0x1004, %rdi\n\t"
+        "lea 200(%rsp), %rsi\n\t"
+        "syscall\n\t"
         
         /* Call ckpt_dump_impl(path, &regs) */
-        /* path is already in %rdi */
+        "movq 40(%rsp), %rdi\n\t"
         "movq %rsp, %rsi\n\t"
         /* align stack to 16 bytes before call */
         "subq $8, %rsp\n\t"
@@ -155,15 +160,14 @@ static int parse_maps(ckpt_region_t *regions, int max_regions,
         bool is_text  = (reg->prot & CKPT_PROT_X) != 0;
         bool is_stack = (strstr(nm, "[stack]") != NULL);
         bool is_heap  = (strstr(nm, "[heap]")  != NULL);
-        bool is_vdso  = (strstr(nm, "[vdso]")  != NULL ||
-                         strstr(nm, "[vsyscall]") != NULL);
+        bool is_vsyscall  = (strstr(nm, "[vsyscall]") != NULL);
 
         if (is_stack) reg->flags |= CKPT_FLAG_STACK;
         if (is_heap)  reg->flags |= CKPT_FLAG_HEAP;
         if (is_text)  reg->flags |= CKPT_FLAG_TEXT;
 
-        /* Skip vDSO — not relevant in gem5 SE mode */
-        if (is_vdso) {
+        /* Skip vsyscall - hard to restore */
+        if (is_vsyscall) {
             reg->flags |= CKPT_FLAG_SKIP;
         }
 

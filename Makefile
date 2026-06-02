@@ -9,7 +9,7 @@
 #   clean       - remove build artifacts
 
 CC      := gcc
-CFLAGS  := -O2 -g -Wall -Wextra -fno-stack-protector
+CFLAGS  := -O2 -g -Wall -Wextra -fno-stack-protector -mno-avx -mno-avx2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -fno-builtin
 LDFLAGS := -static
 
 # -----------------------------------------------------------------------

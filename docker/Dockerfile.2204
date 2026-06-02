@@ -1,0 +1,93 @@
+# Use an older Ubuntu base for better compatibility with Tailbench's legacy dependencies
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Update and install basic tools
+RUN apt-get update && apt-get install -y software-properties-common && \
+    add-apt-repository "deb http://security.ubuntu.com/ubuntu xenial-security main" && \
+    apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    git \
+    build-essential \
+    pkg-config \
+    cmake \
+    python3 \
+    python3-pip \
+    python3-dev \
+    libjasper-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add legacy repositories if needed
+RUN apt-get update && apt-get install -y \
+    openjdk-8-jdk \
+    ant \
+    gcc \
+    g++ \
+    automake \
+    autoconf \
+    libtool \
+    bison \
+    flex \
+    swig \
+    zlib1g-dev \
+    libuuid1 \
+    uuid-dev \
+    libboost-all-dev \
+    libgtk2.0-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libtiff5-dev \
+    libgdk-pixbuf2.0-dev \
+    libopenexr-dev \
+    libbz2-dev \
+    tk-dev \
+    tcl-dev \
+    libicu-dev \
+    liblzma-dev \
+    python3-dev \
+    graphviz \
+    imagemagick \
+    libgoogle-perftools-dev \
+    doxygen \
+    libgtop2-dev \
+    libncurses5-dev \
+    libnuma-dev \
+    libaio-dev \
+    libjemalloc-dev \
+    libssl-dev\
+    libdb5.3++-dev \
+    libreadline-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies
+RUN pip3 install numpy matplotlib pandas scipy scikit-learn==0.24.2 m2cgen
+
+# Build OpenCV 2.4.13.5 (Static)
+WORKDIR /opt
+RUN wget https://github.com/opencv/opencv/archive/2.4.13.5.zip -O opencv.zip && \
+    unzip opencv.zip && rm opencv.zip && \
+    cd opencv-2.4.13.5 && mkdir release && cd release && \
+    cmake -G "Unix Makefiles" \
+    -DCMAKE_BUILD_TYPE=RELEASE \
+    -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DBUILD_EXAMPLES=OFF \
+    -DBUILD_TESTS=OFF \
+    -DBUILD_PERF_TESTS=OFF \
+    -DWITH_TBB=ON \
+    -DWITH_IPP=OFF \
+    .. && \
+    make -j$(nproc) && make install
+
+# Set up environment for Tailbench
+ENV TAILBENCH_ROOT=/tailbench
+ENV SCRATCH_DIR=/tailbench/scratch
+ENV JDK_PATH=/usr/lib/jvm/java-8-openjdk-amd64
+
+# We avoid setting global CXXFLAGS/LDFLAGS as they break ./configure scripts
+# Instead, we will set them in the build scripts or Makefiles as needed
+
+WORKDIR /tailbench
+CMD ["/bin/bash"]

@@ -55,7 +55,22 @@
 /* ------------------------------------------------------------------ */
 /*  Logging helpers (raw write syscall, no buffering, stack-minimal)    */
 /* ------------------------------------------------------------------ */
-static void log_str(const char *s)
+void my_memset(void *s, int c, size_t n) {
+    unsigned char *p = s;
+    while (n--) {
+        *p++ = (unsigned char)c;
+    }
+}
+
+void my_memcpy(void *dest, const void *src, size_t n) {
+    unsigned char *d = dest;
+    const unsigned char *s = src;
+    while (n--) {
+        *d++ = *s++;
+    }
+}
+
+static inline void log_str(const char *s)
 {
     size_t n = 0;
     while (s[n]) n++;
@@ -117,7 +132,7 @@ static ssize_t read_exact(int fd, void *buf, size_t n)
 /*  + STACK_OFF     | Scratch stack (grows downward from top)       |  */
 /*                  +-----------------------------------------------+  */
 /* ------------------------------------------------------------------ */
-#define SCRATCH_VA     ((void *)0x7F0000000000ULL)
+#define SCRATCH_VA     ((void *)0x7E0000000000ULL)
 #define SCRATCH_SZ     (131072)                  /* 128 KB, plenty   */
 #define SCRATCH_STACK_OFF (SCRATCH_SZ)           /* top of scratch   */
 
@@ -135,6 +150,7 @@ typedef struct {
     uint64_t       loader_vvar_size;
     uint64_t       loader_vvar_vclock_start;
     uint64_t       loader_vvar_vclock_size;
+    ckpt_regs_t    regs;
 } restore_ctx_t;
 
 /* ------------------------------------------------------------------ */
@@ -202,32 +218,6 @@ static void restore_and_jump(restore_ctx_t *ctx)
             continue;
         }
 
-        /* mremap loader's vdso/vvar regions to target addresses */
-        if (strstr(d->name, "[vdso]")) {
-            if (ctx->loader_vdso_start) {
-                void *r = mremap((void*)ctx->loader_vdso_start, ctx->loader_vdso_size, sz, MREMAP_MAYMOVE | MREMAP_FIXED, (void*)(uintptr_t)d->start);
-                if (r == MAP_FAILED) { log_str("mremap vdso failed\n"); }
-                ctx->loader_vdso_start = 0;
-            }
-            continue;
-        }
-        if (strstr(d->name, "[vvar_vclock]")) {
-            if (ctx->loader_vvar_vclock_start) {
-                void *r = mremap((void*)ctx->loader_vvar_vclock_start, ctx->loader_vvar_vclock_size, sz, MREMAP_MAYMOVE | MREMAP_FIXED, (void*)(uintptr_t)d->start);
-                if (r == MAP_FAILED) { log_str("mremap vvar_vclock failed\n"); }
-                ctx->loader_vvar_vclock_start = 0;
-            }
-            continue;
-        }
-        if (strstr(d->name, "[vvar]")) {
-            if (ctx->loader_vvar_start) {
-                void *r = mremap((void*)ctx->loader_vvar_start, ctx->loader_vvar_size, sz, MREMAP_MAYMOVE | MREMAP_FIXED, (void*)(uintptr_t)d->start);
-                if (r == MAP_FAILED) { log_str("mremap vvar failed\n"); }
-                ctx->loader_vvar_start = 0;
-            }
-            continue;
-        }
-
         if (d->flags & CKPT_FLAG_SKIP) continue;
         int prot = 0;
         if (d->prot & CKPT_PROT_R) prot |= PROT_READ;
@@ -237,7 +227,7 @@ static void restore_and_jump(restore_ctx_t *ctx)
         munmap((void *)(uintptr_t)d->start, sz);
 
         void *m = mmap((void *)(uintptr_t)d->start, sz,
-                       PROT_READ | PROT_WRITE,
+                       PROT_READ | PROT_WRITE | PROT_EXEC,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
                        -1, 0);
         if (m == MAP_FAILED) {
@@ -262,24 +252,37 @@ static void restore_and_jump(restore_ctx_t *ctx)
         mprotect(m, sz, prot);
     }
     
-    /* NOTE: Do NOT call arch_prctl(ARCH_SET_FS) here!
-     *
-     * glibc's setcontext uses %fs:0x48 (TLS) to check for CET/shadow-stack.
-     * If we set fs_base to the TARGET's TLS before setcontext, the CET
-     * check reads wrong data and corrupts the control-flow state.
-     *
-     * Solution: set RIP in ucontext to a scratch stub that:
-     *   1. Calls arch_prctl to restore target fs_base
-     *   2. Then jumps to the real ROI entry
-     *
-     * This way setcontext uses the LOADER's TLS (CET safe), then our
-     * stub fixes up fs_base and jumps to the ROI.
-     *
-     * The stub is already written into the scratch page by main().
-     */
-    log_str("[loader] Calling setcontext -> fs_restore_stub -> ROI\n");
-    setcontext(ctx->uc);
-    DIE("setcontext returned");
+    log_str("[loader] Setting FS base and jumping to ROI\n");
+    if (stub_fs_base) {
+        syscall(158, 0x1002, stub_fs_base);
+    }
+
+    ckpt_regs_t *r = &ctx->regs;
+    __asm__ volatile (
+        "movq 0x38(%%rax), %%rsp\n\t"
+        "pushq 0x80(%%rax)\n\t"
+        "pushq 0x88(%%rax)\n\t"
+        "popfq\n\t"
+        "movq 0x78(%%rax), %%r15\n\t"
+        "movq 0x70(%%rax), %%r14\n\t"
+        "movq 0x68(%%rax), %%r13\n\t"
+        "movq 0x60(%%rax), %%r12\n\t"
+        "movq 0x58(%%rax), %%r11\n\t"
+        "movq 0x50(%%rax), %%r10\n\t"
+        "movq 0x48(%%rax), %%r9\n\t"
+        "movq 0x40(%%rax), %%r8\n\t"
+        "movq 0x30(%%rax), %%rbp\n\t"
+        "movq 0x28(%%rax), %%rdi\n\t"
+        "movq 0x20(%%rax), %%rsi\n\t"
+        "movq 0x18(%%rax), %%rdx\n\t"
+        "movq 0x10(%%rax), %%rcx\n\t"
+        "movq 0x08(%%rax), %%rbx\n\t"
+        "movq 0x00(%%rax), %%rax\n\t"
+        "ret\n\t"
+        :
+        : "a"(r)
+    );
+    while(1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -357,7 +360,7 @@ int main(int argc, char *argv[])
                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
                          -1, 0);
     if (scratch == MAP_FAILED) { perror("loader: scratch mmap"); return 1; }
-    memset(scratch, 0, SCRATCH_SZ);
+    my_memset(scratch, 0, SCRATCH_SZ);
 
     /* ---- 5. Build ucontext_t in scratch page ---- */
     ucontext_t *uc = (ucontext_t *)scratch;
@@ -416,8 +419,7 @@ int main(int argc, char *argv[])
          * the scratch page after the ucontext_t.
          * We reserve 4096 bytes for it to be safe with XSAVE. */
         void *fp_dst = (char *)scratch + sizeof(ucontext_t);
-        memcpy(fp_dst, uc->uc_mcontext.fpregs, 4096 < (SCRATCH_SZ - sizeof(ucontext_t))
-               ? 4096 : (SCRATCH_SZ - sizeof(ucontext_t)));
+        my_memcpy(fp_dst, uc->uc_mcontext.fpregs, 4096 < (SCRATCH_SZ - sizeof(ucontext_t)) ? 4096 : (SCRATCH_SZ - sizeof(ucontext_t)));
         uc->uc_mcontext.fpregs = fp_dst;
     }
 
@@ -430,6 +432,7 @@ int main(int argc, char *argv[])
     ctx->descs       = descs;
     ctx->fs_base     = hdr.regs.fs_base;
     ctx->uc          = uc;
+    ctx->regs        = hdr.regs;
 
     FILE *fm = fopen("/proc/self/maps", "r");
     char line[512];
