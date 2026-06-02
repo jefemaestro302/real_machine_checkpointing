@@ -2,65 +2,80 @@
 
 This repository contains a full proof-of-concept and integration toolkit for taking memory/register checkpoints of real applications natively on x86_64 Linux and perfectly restoring them inside the **gem5 simulator** in Syscall Emulation (SE) mode.
 
-By dynamically capturing all `vma` segments, segment selectors, CPU registers, and the `fs_base` register, this bypasses the need for the host OS or gem5 to handle complex PIE/ASLR initialization.
+By dynamically capturing all `vma` segments, segment selectors, CPU registers, and the `fs_base` register via an `LD_PRELOAD` interceptor, this bypasses the need for the host OS or gem5 to handle complex PIE/ASLR initialization or interpreter loading.
 
 ## Repository Structure
 
-- `src/`: The core checkpoint logic. Includes `dumper.c`/`dumper_asm.S` for natively capturing the memory state, and `loader.c` for injecting the memory state back into the gem5 simulator.
-- `Makefile`: A standalone test environment that builds a dummy `target_app` and `loader` to test the checkpoint mechanism without compiling heavy applications.
-- `patches/`: Contains `tailbench_checkpoint.patch` to seamlessly integrate the checkpointing harness into the official Tailbench benchmarks.
-- `docker/`: A reproducible environment for compiling Tailbench to avoid dependency conflicts on modern OS versions.
-- `setup_tailbench.sh`: An automated script that clones Tailbench, applies our patch, and builds everything securely inside Docker.
+- `src/libckpt.c`: The core `LD_PRELOAD` dynamic library that hooks into the target process and handles capturing state. It provides three triggering modes: `SIGUSR1` (manual), `CKPT_AFTER_NS` (timed), and `CKPT_AT_SYMBOL` (automatic breakpoint at a specific function).
+- `src/dumper.c` / `src/dumper_asm.S`: Handles dumping the exact CPU register state and memory maps to disk.
+- `src/loader.c`: A statically linked loader used by gem5 (or natively) to load the checkpoint back into memory, properly set `fs_base`, restore registers, and jump directly to the target program's execution without using traditional `execve` boundaries.
+- `run_example.sh` & `example.c`: A self-contained, simple local example.
+- `Tailbench/`: Contains all our modifications to Tailbench to cleanly integrate this checkpointing logic directly into the benchmark harness.
+- `run_checkpoint_sde.sh` & `run_gem5.sh`: Wrappers for safely dumping Tailbench benchmarks via Intel SDE (to mask out unsupported AVX instructions) and then simulating them inside gem5.
 
-## 1. Trying the Simple Proof-of-Concept
+---
 
-To verify that your gem5 environment works with our raw memory loading technique:
+## 1. Quick Local Example (Native)
 
-1. **Build the PoC:**
-   ```bash
-   make all
-   ```
-2. **Generate the dummy checkpoint:**
-   *(Run natively with ASLR disabled so the addresses are fixed)*
-   ```bash
-   setarch x86_64 -R ./build/target_app /tmp/my_dump.ckpt
-   ```
-3. **Restore inside gem5:**
-   ```bash
-   path/to/gem5.opt path/to/se.py -c build/loader -o "/tmp/my_dump.ckpt"
-   ```
-   You should see `[target] === ROI PHASE DONE ===` output from the simulator!
+To understand exactly how this works without involving gem5, check out the provided local example. It demonstrates hooking a specific function (`target_function`) to automatically drop a checkpoint and then locally restoring it.
 
-## 2. Testing the Massive Tailbench Integration
+**Run the example:**
+```bash
+./run_example.sh
+```
 
-Instead of trying to compile Tailbench with static libraries (which fundamentally breaks Silo's build system), we modified the harness to dynamically capture loaded shared libraries (like `libc`, `jemalloc`, `lz4`) natively.
+**What happens?**
+1. It compiles `example.c` (a loop that counts to 10 and hits `target_function` at iteration 3).
+2. It compiles `libckpt.so` and the static `loader`.
+3. It launches the example natively with `LD_PRELOAD=./build/libckpt.so` and `CKPT_AT_SYMBOL=target_function`.
+4. At iteration 3, `libckpt` intercepts the call, dumps `example_dump.ckpt`, and cleanly exits.
+5. Finally, it uses `./build/loader example_dump.ckpt` to natively load the state back into memory. The program immediately resumes from iteration 3 and counts to 10!
 
-1. **Setup and compile:**
+---
+
+## 2. Using it in gem5 (Tailbench)
+
+For massive workloads like Tailbench, we have cleanly integrated the checkpointing directly into the benchmark harness (`tbench_server_integrated.cpp`). You do **not** need `LD_PRELOAD` for integrated Tailbench apps because the dumper is dynamically linked directly into the harness!
+
+1. **Setup and compile Tailbench (via Docker to avoid host dependency issues):**
    ```bash
    ./setup_tailbench.sh
    ```
-2. **Generate the Tailbench Silo checkpoint:**
-   ```bash
-   cd Tailbench/tailbench/silo
-   LD_LIBRARY_PATH=./third-party/lz4 \
-   TBENCH_QPS=10 \
-   TBENCH_MAXREQS=10 \
-   TBENCH_WARMUPREQS=10 \
-   setarch x86_64 -R ./out-perf.masstree/benchmarks/dbtest_integrated \
-     --bench tpcc --num-threads 1 --scale-factor 1 \
-     --retry-aborted-transactions --ops-per-worker 1000
-   ```
-   *This will generate a massive ~277 MB `tailbench_dump.ckpt`.*
 
-3. **Simulate the Tailbench ROI in gem5:**
+2. **Generate the checkpoint (e.g., for Silo):**
+   *Note: We run this through Intel SDE and set GLIBC_TUNABLES to prevent the host's `glibc` from utilizing AVX/SSE4.1 instructions, which gem5's SE mode lacks support for.*
    ```bash
-   # From your gem5 directory
-   build/X86/gem5.opt configs/deprecated/example/se.py \
-     -c /path/to/real_machine_checkpoint/build/loader \
-     -o "/path/to/real_machine_checkpoint/Tailbench/tailbench/silo/tailbench_dump.ckpt"
+   ./run_checkpoint_sde.sh
+   ```
+   *This outputs `tailbench_dump.ckpt` inside `Tailbench/tailbench/silo/`.*
+
+3. **Restore the checkpoint inside gem5:**
+   Use the provided helper script, which sets up the correct memory sizing and CPU configurations.
+   ```bash
+   ./run_gem5.sh Tailbench/tailbench/silo/tailbench_dump.ckpt
    ```
 
-## Key Architectural Decisions
-- **Dynamic Linking:** We abandoned forced static linking in favor of dynamically linking Tailbench but taking the checkpoint *after* the `ld.so` interpreter has completely mapped the libraries.
-- **`fs_base` Bypass:** Because `glibc` strictly relies on `fs_base` for TLS (Thread Local Storage), our `loader` must invoke the `ARCH_SET_FS` `arch_prctl` syscall and use `setcontext` to trick the execution context without triggering a standard function prologue.
-- **Naked Functions vs Pure ASM:** We initially used `__attribute__((naked))` for the `ckpt_dump` function. Because GCC completely changed how naked attributes behave in modern x86_64 versions, we moved the capture logic to pure `dumper_asm.S` to prevent the stack pointer from corrupting the return address.
+You should see gem5 natively jump straight to the ROI (Region of Interest) and begin simulating:
+```
+[loader] Setting FS base and jumping to ROI
+```
+
+---
+
+## Configuration Flags
+
+When using `libckpt.so` via `LD_PRELOAD`, you can configure its behavior using the following environment variables:
+
+| Variable | Description |
+|---|---|
+| `CKPT_OUTPUT` | Path for the generated checkpoint (default: `libckpt_dump.ckpt`). |
+| `CKPT_AFTER_NS` | Automatically trigger a checkpoint after X nanoseconds of execution. |
+| `CKPT_AT_SYMBOL` | Automatically trigger a checkpoint when a specific function symbol is called. Works with PIE binaries by parsing the in-process ELF `.symtab` natively. |
+| `CKPT_AT_SYMBOL_CALL` | When using `CKPT_AT_SYMBOL`, wait for the N-th invocation of the function before dumping (default: `1`). |
+
+If none of the automatic triggers are defined, `libckpt.so` falls back to waiting for a `SIGUSR1` signal.
+
+## Architectural Notes
+- **Dynamic Linking Support:** By loading the checkpoint *after* the `ld.so` interpreter has mapped all libraries, we bypass all of gem5's SE mode limitations regarding PIE binaries and ASLR.
+- **`fs_base` Bypass:** Because `glibc` strictly relies on `fs_base` for TLS (Thread Local Storage), our `loader` must invoke the `ARCH_SET_FS` `arch_prctl` syscall and use `setcontext` to trick the execution context natively.
+- **Pure ASM context dump:** We capture the context using pure assembly `dumper_asm.S` to prevent modern compiler optimizations or stack red-zones from corrupting the instruction pointer or stack pointer upon restoration.
