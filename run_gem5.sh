@@ -18,6 +18,7 @@ CKPT="${1:-tailbench_dump.ckpt}"
 CPU="atomic"
 MEM="8GB"
 GEM5_ROOT="${GEM5_ROOT:-../../../gem5}"
+MAX_INSTS=""
 
 # ── Parse args ─────────────────────────────────────────────────────────────
 shift 2>/dev/null || true
@@ -26,6 +27,7 @@ while [[ $# -gt 0 ]]; do
         --cpu)   CPU="$2";  shift 2 ;;
         --mem)   MEM="$2";  shift 2 ;;
         --gem5)  GEM5_ROOT="$2"; shift 2 ;;
+        --maxinsts) MAX_INSTS="--maxinsts=$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -78,6 +80,7 @@ echo "========================================================"
     --mem-size="$MEM" \
     --cpu-type="$CPU_TYPE" \
     $CACHE_FLAGS \
+    $MAX_INSTS \
     -c "$LOADER" \
     -o "$CKPT"
 

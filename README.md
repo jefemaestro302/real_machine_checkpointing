@@ -11,6 +11,9 @@ By dynamically capturing all `vma` segments, segment selectors, CPU registers, a
 - `src/loader.c`: A statically linked loader used by gem5 (or natively) to load the checkpoint back into memory, properly set `fs_base`, restore registers, and jump directly to the target program's execution without using traditional `execve` boundaries.
 - `run_example.sh` & `example.c`: A self-contained, simple local example.
 - `run_gem5.sh`: Wrapper for simulating dumped checkpoints inside gem5.
+- `run_noavx_glibc_checkpoint.sh`: Full workflow for generating a gem5-compatible checkpoint of Tailbench Silo using a glibc compiled with --disable-multi-arch.
+- `generate_all_checkpoints_noavx.sh`: A script that leverages a custom Docker container to natively generate AVX-clean checkpoints for the entire Tailbench suite (masstree, moses, shore, silo, sphinx, xapian, img-dnn).
+- `run_tailbench_timed.sh`: A local-only script to demonstrate running a Tailbench benchmark with a timed checkpoint.
 
 ---
 
@@ -32,31 +35,66 @@ To understand exactly how this works without involving gem5, check out the provi
 
 ---
 
-## 2. Using it in gem5
+## 2. Checkpointing Any Application for gem5 (The AVX Solution)
 
-You can use `libckpt.so` to checkpoint any application, and then load it into gem5.
+You can use `libckpt.so` to checkpoint any application, and then load it into gem5. However, gem5's SE mode lacks support for many modern x86 instructions (like AVX2 `PBROADCASTB` or AVX-512). If you generate a checkpoint natively on a modern host, two things will crash gem5:
+1. Your compiler generating AVX instructions for your application code.
+2. `glibc` dynamically resolving its optimized routines (e.g., `memcpy`) to use AVX instructions using `IFUNC` CPUID dispatch at startup.
 
-**Important Note on AVX/SSE Instructions:** 
-gem5's SE mode lacks support for many modern x86 instructions (like AVX2 `PBROADCASTB` or AVX-512). If you generate a checkpoint natively on a modern host, `glibc` will dynamically resolve its optimized routines (e.g., `strlen`, `memcpy`) to use AVX instructions. When you restore this in gem5, gem5 will crash.
-To circumvent this, you must run your application under **Intel SDE** and spoof an older CPU (like Westmere) when taking the checkpoint:
+To successfully checkpoint an application for gem5, you must follow these 3 steps:
 
+### Step 1: Compile your application without AVX
+Ensure your application's `Makefile` or build system uses the following C/C++ flags to prevent the compiler from generating AVX instructions:
 ```bash
-GLIBC_TUNABLES="glibc.cpu.hwcaps=-SSE4_2,-SSE4_1,-SSSE3,-AVX,-AVX2,-AVX512F" \
-setarch x86_64 -R /path/to/sde64 -wsm -- \
-  env LD_PRELOAD=./build/libckpt.so CKPT_AT_SYMBOL=my_function \
-  ./my_application
+CFLAGS="-mno-avx -mno-avx2 -mno-avx512f"
+CXXFLAGS="-mno-avx -mno-avx2 -mno-avx512f"
 ```
 
-**Simulate in gem5:**
-Once you have the `.ckpt` file (generated with AVX disabled), run it in gem5 using our helper script:
+### Step 2: Build the No-AVX glibc Docker Environment
+To cleanly bypass the `IFUNC` dynamic dispatch in system libraries, we use a Docker environment that contains `glibc 2.35` compiled from source with the `--disable-multi-arch` flag. This completely strips AVX instructions from the C library.
+
 ```bash
-./run_gem5.sh my_application_dump.ckpt
+# Build the provided docker image
+docker build -t tailbench_noavx_glibc -f docker/Dockerfile.noavx_glibc .
 ```
 
-You should see gem5 natively jump straight to your application's state and begin simulating:
+### Step 3: Run and Checkpoint Inside Docker
+Launch your application *inside* the Docker container, executing it through the custom dynamic linker so it uses the AVX-free glibc instead of the host's system glibc.
+
+```bash
+# Example: Taking a checkpoint after 3 seconds (3,000,000,000 ns)
+docker run -it --rm --privileged -v "$(pwd)":/workspace tailbench_noavx_glibc /bin/bash -c "
+  cd /workspace && \
+  /opt/glibc-noavx/lib/ld-linux-x86-64.so.2 \
+      --library-path \"/opt/glibc-noavx/lib:/lib/x86_64-linux-gnu\" \
+      env LD_PRELOAD=./build/libckpt.so CKPT_AFTER_NS=3000000000 \
+      ./my_application
+"
+```
+
+### Step 4: Simulate in gem5
+Once you have the `.ckpt` file (generated with AVX disabled), run it natively in gem5 using our helper script:
+```bash
+./run_gem5.sh my_application_dump.ckpt --cpu o3 --maxinsts 10000000
+```
+
+You should see gem5 jump straight to your application's state and begin simulating:
 ```
 [loader] Setting FS base and jumping to ROI
 ```
+
+---
+
+## Tailbench Suite Status
+
+We have extensively tested this pipeline with the **Tailbench v0.9** suite. By combining application-level `-mno-avx` compiler flags and our `glibc --disable-multi-arch` environment, the following applications run flawlessly in gem5 O3CPU:
+
+* ✅ **masstree**
+* ✅ **moses**
+* ✅ **shore**
+* ✅ **silo**
+* ✅ **xapian**
+* ✅ **img-dnn**
 
 ---
 

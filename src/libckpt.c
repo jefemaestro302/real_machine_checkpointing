@@ -116,10 +116,13 @@ static void do_dump_from_ucontext(ucontext_t *uc)
     fprintf(stderr, "[libckpt] RIP=0x%lx  RSP=0x%lx\n", regs.rip, regs.rsp);
 
     int rc = ckpt_dump_impl(g_output_path, &regs);
-    if (rc != 0)
+    if (rc != 0) {
         fprintf(stderr, "[libckpt] ERROR: ckpt_dump_impl returned %d\n", rc);
-    else
-        fprintf(stderr, "[libckpt] Done!\n");
+        _exit(1);
+    } else {
+        fprintf(stderr, "[libckpt] Done! Exiting application.\n");
+        _exit(0);
+    }
 }
 
 /* ------------------------------------------------------------------ */

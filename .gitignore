@@ -7,3 +7,6 @@ print_regs
 print_regions.c
 print_regs.c
 fix_loader.patch
+SESSION_SUMMARY.md
+scratch/
+example

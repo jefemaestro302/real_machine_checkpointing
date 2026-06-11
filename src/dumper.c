@@ -35,78 +35,7 @@
 
 int ckpt_dump_impl(const char *path, ckpt_regs_t *r);
 
-__attribute__((naked)) int ckpt_dump(const char *path)
-{
-    __asm__ volatile (
-        "subq $256, %rsp\n\t"
-        
-        "movq %rax, 0(%rsp)\n\t"
-        "movq %rbx, 8(%rsp)\n\t"
-        "movq %rcx, 16(%rsp)\n\t"
-        "movq %rdx, 24(%rsp)\n\t"
-        "movq %rsi, 32(%rsp)\n\t"
-        "movq %rdi, 40(%rsp)\n\t"
-        "movq %rbp, 48(%rsp)\n\t"
-        
-        /* The original %rsp was %rsp + 256 (our alloc) + 8 (the return address) */
-        "leaq 264(%rsp), %rax\n\t"
-        "movq %rax, 56(%rsp)\n\t"
-        
-        "movq %r8,  64(%rsp)\n\t"
-        "movq %r9,  72(%rsp)\n\t"
-        "movq %r10, 80(%rsp)\n\t"
-        "movq %r11, 88(%rsp)\n\t"
-        "movq %r12, 96(%rsp)\n\t"
-        "movq %r13, 104(%rsp)\n\t"
-        "movq %r14, 112(%rsp)\n\t"
-        "movq %r15, 120(%rsp)\n\t"
-        
-        /* RIP: Return address is at 256(%rsp) */
-        "movq 256(%rsp), %rax\n\t"
-        "movq %rax, 128(%rsp)\n\t"
-        
-        /* RFLAGS */
-        "pushfq\n\t"
-        "popq %rax\n\t"
-        "movq %rax, 136(%rsp)\n\t"
-        
-        /* Segments */
-        "movq $0, 144(%rsp)\n\t"
-        "movw %cs, 144(%rsp)\n\t"
-        "movq $0, 152(%rsp)\n\t"
-        "movw %ss, 152(%rsp)\n\t"
-        "movq $0, 160(%rsp)\n\t"
-        "movw %ds, 160(%rsp)\n\t"
-        "movq $0, 168(%rsp)\n\t"
-        "movw %es, 168(%rsp)\n\t"
-        "movq $0, 176(%rsp)\n\t"
-        "movw %fs, 176(%rsp)\n\t"
-        "movq $0, 184(%rsp)\n\t"
-        "movw %gs, 184(%rsp)\n\t"
-        
-        /* fs_base, gs_base */
-        "mov $158, %rax\n\t"
-        "mov $0x1003, %rdi\n\t"
-        "lea 192(%rsp), %rsi\n\t"
-        "syscall\n\t"
 
-        "mov $158, %rax\n\t"
-        "mov $0x1004, %rdi\n\t"
-        "lea 200(%rsp), %rsi\n\t"
-        "syscall\n\t"
-        
-        /* Call ckpt_dump_impl(path, &regs) */
-        "movq 40(%rsp), %rdi\n\t"
-        "movq %rsp, %rsi\n\t"
-        /* align stack to 16 bytes before call */
-        "subq $8, %rsp\n\t"
-        "call ckpt_dump_impl\n\t"
-        "addq $8, %rsp\n\t"
-        
-        "addq $256, %rsp\n\t"
-        "ret\n\t"
-    );
-}
 
 
 /* ------------------------------------------------------------------ */
