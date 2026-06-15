@@ -162,6 +162,9 @@ static int dump_region_data(int fd, ckpt_region_t *reg, uint64_t *cur_off)
 
     reg->data_size = (uint64_t)written;
     *cur_off += written;
+    fprintf(stderr, "[ckpt] region %lx-%lx: file_offset=%lu data_size=%lu\n",
+            (unsigned long)reg->start, (unsigned long)reg->end,
+            (unsigned long)reg->file_offset, (unsigned long)reg->data_size);
     return 0;
 }
 
@@ -224,7 +227,9 @@ int ckpt_dump_impl(const char *path, ckpt_regs_t *r)
     /* 6. Patch region descriptors with correct file_offset / data_size.
      * Use pwrite to avoid depending on the fd's current position. */
     ssize_t desc_sz = (ssize_t)((uint64_t)num_regions * sizeof(ckpt_region_t));
-    if (pwrite(fd, regions, (size_t)desc_sz, (off_t)sizeof(ckpt_header_t)) != desc_sz) {
+    ssize_t pw = pwrite(fd, regions, (size_t)desc_sz, (off_t)sizeof(ckpt_header_t));
+    fprintf(stderr, "[ckpt] pwrite descriptors: returned=%ld expected=%ld\n", (long)pw, (long)desc_sz);
+    if (pw != desc_sz) {
         perror("ckpt: pwrite descriptors patch"); close(fd); return -1;
     }
 

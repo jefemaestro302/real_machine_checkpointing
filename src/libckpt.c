@@ -62,6 +62,7 @@ static void   *g_sym_addr       = NULL; /* resolved address            */
 static uint8_t g_sym_orig[1]    = {0};  /* saved first byte (for INT3) */
 static atomic_int g_sym_call_count = 0; /* how many times hook fired   */
 static int     g_sym_target_call = 1;   /* CKPT_AT_SYMBOL_CALL value   */
+static pthread_t g_main_tid     = 0;    /* main thread TID (set in ctor) */
 
 /* ------------------------------------------------------------------ */
 /*  Helpers: make a page (un)writable                                   */
@@ -411,7 +412,9 @@ static void *timer_thread(void *arg)
     nanosleep(&ts, NULL);
 
     if (!atomic_load(&g_dumped))
-        raise(SIGUSR1);
+        pthread_kill(g_main_tid, SIGUSR1);  /* signal the MAIN thread so it
+                                             * blocks in the handler while
+                                             * we capture its CPU state */
     return NULL;
 }
 
@@ -425,6 +428,7 @@ static void libckpt_init(void)
      * no child process (shells, nm, make, etc.) inherits LD_PRELOAD and
      * causes a fork bomb by re-loading libckpt.so recursively. */
     unsetenv("LD_PRELOAD");
+    g_main_tid = pthread_self();   /* record main thread for directed SIGUSR1 */
 
     g_output_path = getenv("CKPT_OUTPUT");
     if (!g_output_path) g_output_path = "libckpt_dump.ckpt";
