@@ -122,8 +122,10 @@ static int parse_maps(ckpt_region_t *regions, int max_regions,
 
 /* ------------------------------------------------------------------ */
 /*  Write region payload to file                                         */
+/*  cur_off: current absolute write position in the file (in/out).      */
+/*  This avoids lseek(SEEK_CUR) which is unreliable on network FSes.   */
 /* ------------------------------------------------------------------ */
-static int dump_region_data(int fd, ckpt_region_t *reg)
+static int dump_region_data(int fd, ckpt_region_t *reg, uint64_t *cur_off)
 {
     if (reg->flags & CKPT_FLAG_SKIP) {
         reg->data_size   = 0;
@@ -131,10 +133,7 @@ static int dump_region_data(int fd, ckpt_region_t *reg)
         return 0;
     }
 
-    /* Record current file position */
-    off_t pos = lseek(fd, 0, SEEK_CUR);
-    if (pos == (off_t)-1) { perror("ckpt: lseek"); return -1; }
-    reg->file_offset = (uint64_t)pos;
+    reg->file_offset = *cur_off;
 
     size_t  size = reg->end - reg->start;
     uint8_t *ptr = (uint8_t *)(uintptr_t)reg->start;
@@ -150,16 +149,19 @@ static int dump_region_data(int fd, ckpt_region_t *reg)
             if (errno == EFAULT) {
                 /* Page not readable (e.g. guard page) — zero-fill */
                 static const uint8_t zeros[4096] = {0};
-                write(fd, zeros, chunk);
+                ssize_t zr = write(fd, zeros, chunk);
+                written += (zr > 0 ? (size_t)zr : chunk);
             } else {
                 perror("ckpt: write");
                 return -1;
             }
+        } else {
+            written += (size_t)r;
         }
-        written += (r > 0 ? (size_t)r : chunk);
     }
 
-    reg->data_size = (uint64_t)size;
+    reg->data_size = (uint64_t)written;
+    *cur_off += written;
     return 0;
 }
 
@@ -207,21 +209,23 @@ int ckpt_dump_impl(const char *path, ckpt_regs_t *r)
         perror("ckpt: write descriptors"); close(fd); return -1;
     }
 
-    /* 5. Write actual memory payloads and record offsets */
+    /* 5. Write actual memory payloads and record offsets.
+     * cur_off tracks the absolute file position so we never need lseek(SEEK_CUR),
+     * which is unreliable on beegfs / NFS. */
+    uint64_t cur_off = (uint64_t)sizeof(ckpt_header_t) +
+                       (uint64_t)num_regions * sizeof(ckpt_region_t);
     for (int i = 0; i < num_regions; i++) {
-        if (dump_region_data(fd, &regions[i]) < 0) {
+        if (dump_region_data(fd, &regions[i], &cur_off) < 0) {
             fprintf(stderr, "[ckpt] Warning: failed to dump region %d (%s)\n",
                     i, regions[i].name);
         }
     }
 
-    /* 6. Patch region descriptors with correct file_offset / data_size */
-    if (lseek(fd, (off_t)CKPT_REGIONS_OFFSET, SEEK_SET) == (off_t)-1) {
-        perror("ckpt: lseek patch"); close(fd); return -1;
-    }
-    if (write(fd, regions, num_regions * sizeof(ckpt_region_t)) !=
-              (ssize_t)(num_regions * sizeof(ckpt_region_t))) {
-        perror("ckpt: write descriptors patch"); close(fd); return -1;
+    /* 6. Patch region descriptors with correct file_offset / data_size.
+     * Use pwrite to avoid depending on the fd's current position. */
+    ssize_t desc_sz = (ssize_t)((uint64_t)num_regions * sizeof(ckpt_region_t));
+    if (pwrite(fd, regions, (size_t)desc_sz, (off_t)sizeof(ckpt_header_t)) != desc_sz) {
+        perror("ckpt: pwrite descriptors patch"); close(fd); return -1;
     }
 
     close(fd);
