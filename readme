@@ -103,5 +103,14 @@ funciones:
         ckpt_region_t *reg)
 
 ======================================================================================
-    
+#################################### libckpt.c ########################################
+defines:
+    _GNU_SOURCE
+    STATIC_BUILD
 
+funciones:
+
+    -static void sigtrap-handler(
+        int sig, 
+        siginfo_t *info, 
+        void *ctx)

@@ -43,7 +43,6 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <ucontext.h>
 #include <signal.h>
 
 #include "checkpoint.h"
@@ -143,7 +142,6 @@ typedef struct {
     int            ckpt_fd;
     ckpt_region_t *descs;         /* region descriptors                 */
     uint64_t       fs_base;       /* TLS fs_base to restore             */
-    ucontext_t    *uc;            /* pointer to the ucontext in scratch */
     uint64_t       loader_vdso_start;
     uint64_t       loader_vdso_size;
     uint64_t       loader_vvar_start;
@@ -362,76 +360,21 @@ int main(int argc, char *argv[])
     if (scratch == MAP_FAILED) { perror("loader: scratch mmap"); return 1; }
     my_memset(scratch, 0, SCRATCH_SZ);
 
-    /* ---- 5. Build ucontext_t in scratch page ---- */
-    ucontext_t *uc = (ucontext_t *)scratch;
-
-    /* IMPORTANT: getcontext() fills in the FP/SSE/XSAVE state which
-     * setcontext() requires on modern x86-64 (PKRU etc.).
-     * We get a valid baseline, then override only the GPRs. */
-    getcontext(uc);   /* fills uc_mcontext.fpregs, uc_sigmask, etc. */
-
-    /* Clear uc_stack and uc_link: we're doing a raw register restore,
-     * not makecontext/swapcontext. Leaving uc_stack filled with the
-     * loader's stack pointer can cause setcontext to misbehave. */
-    uc->uc_stack.ss_sp    = NULL;
-    uc->uc_stack.ss_size  = 0;
-    uc->uc_stack.ss_flags = SS_DISABLE;
-    uc->uc_link           = NULL;
-
-
-    uc->uc_mcontext.gregs[REG_R8]     = (greg_t)hdr.regs.r8;
-    uc->uc_mcontext.gregs[REG_R9]     = (greg_t)hdr.regs.r9;
-    uc->uc_mcontext.gregs[REG_R10]    = (greg_t)hdr.regs.r10;
-    uc->uc_mcontext.gregs[REG_R11]    = (greg_t)hdr.regs.r11;
-    uc->uc_mcontext.gregs[REG_R12]    = (greg_t)hdr.regs.r12;
-    uc->uc_mcontext.gregs[REG_R13]    = (greg_t)hdr.regs.r13;
-    uc->uc_mcontext.gregs[REG_R14]    = (greg_t)hdr.regs.r14;
-    uc->uc_mcontext.gregs[REG_R15]    = (greg_t)hdr.regs.r15;
-    uc->uc_mcontext.gregs[REG_RDI]    = (greg_t)hdr.regs.rdi;
-    uc->uc_mcontext.gregs[REG_RSI]    = (greg_t)hdr.regs.rsi;
-    uc->uc_mcontext.gregs[REG_RBP]    = (greg_t)hdr.regs.rbp;
-    uc->uc_mcontext.gregs[REG_RBX]    = (greg_t)hdr.regs.rbx;
-    uc->uc_mcontext.gregs[REG_RDX]    = (greg_t)hdr.regs.rdx;
-    uc->uc_mcontext.gregs[REG_RAX]    = (greg_t)hdr.regs.rax;
-    uc->uc_mcontext.gregs[REG_RCX]    = (greg_t)hdr.regs.rcx;
-    uc->uc_mcontext.gregs[REG_RSP]    = (greg_t)hdr.regs.rsp;
+    /* ---- 5. (Removed ucontext_t logic) ---- */
     
-    /* Instead of jumping to the ROI directly, jump to our stub that will
-     * fix up fs_base and then jump to the ROI. */
+    /* ---- 6. Build restore_ctx in scratch page ----
+     * Layout: [restore_ctx_t][scratch stack] */
+
+
+    restore_ctx_t *ctx = (restore_ctx_t *)((char *)scratch);
+
     stub_fs_base = hdr.regs.fs_base;
     stub_roi_rip = hdr.roi_entry_rip;
-    uc->uc_mcontext.gregs[REG_RIP]    = (greg_t)fs_restore_stub;
-
-    uc->uc_mcontext.gregs[REG_EFL]    = (greg_t)hdr.regs.rflags;
-    uc->uc_mcontext.gregs[REG_CSGSFS] = (greg_t)(
-        (hdr.regs.cs & 0xffffULL) |
-        ((hdr.regs.gs & 0xffffULL) << 16) |
-        ((hdr.regs.fs & 0xffffULL) << 48)
-    );
-    /* NOTE: fpregs is already set by getcontext() - do NOT set to NULL */
-    /* uc->uc_mcontext.fpregs is valid from getcontext() */
-
-    /* The fpregs buffer getcontext() filled is on the loader's stack.
-     * Since the loader's stack may be clobbered, we need to copy the
-     * fpregs into the scratch page too. */
-    if (uc->uc_mcontext.fpregs) {
-        /* Copy the fpstate (576 bytes for FXSAVE, more for XSAVE) to
-         * the scratch page after the ucontext_t.
-         * We reserve 4096 bytes for it to be safe with XSAVE. */
-        void *fp_dst = (char *)scratch + sizeof(ucontext_t);
-        my_memcpy(fp_dst, uc->uc_mcontext.fpregs, 4096 < (SCRATCH_SZ - sizeof(ucontext_t)) ? 4096 : (SCRATCH_SZ - sizeof(ucontext_t)));
-        uc->uc_mcontext.fpregs = fp_dst;
-    }
-
-    /* ---- 6. Build restore_ctx in scratch page ----
-     * Layout: [ucontext_t][fpstate 4096B][restore_ctx_t][scratch stack] */
-    restore_ctx_t *ctx = (restore_ctx_t *)((char *)scratch + sizeof(ucontext_t) + 4096);
 
     ctx->num_regions = hdr.num_regions;
     ctx->ckpt_fd     = fd;
     ctx->descs       = descs;
     ctx->fs_base     = hdr.regs.fs_base;
-    ctx->uc          = uc;
     ctx->regs        = hdr.regs;
 
     FILE *fm = fopen("/proc/self/maps", "r");

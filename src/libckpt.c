@@ -35,7 +35,9 @@
 #include <signal.h>
 #include <pthread.h>
 #include <time.h>
+#ifndef STATIC_BUILD
 #include <dlfcn.h>
+#endif
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -343,19 +345,25 @@ done:
 static void *resolve_symbol(const char *name)
 {
     /* Try 1: normal dlsym across all loaded objects */
+#ifndef STATIC_BUILD
     void *addr = dlsym(RTLD_DEFAULT, name);
     if (addr) return addr;
+#else
+    void *addr = NULL;
+#endif
 
     /* Try 2: explicitly open the main executable's dynsym */
     char exe_path[512] = {0};
     ssize_t n = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
     if (n > 0) {
+#ifndef STATIC_BUILD
         void *h = dlopen(exe_path, RTLD_NOW | RTLD_NOLOAD);
         if (!h) h = dlopen(exe_path, RTLD_NOW | RTLD_GLOBAL);
         if (h) {
             addr = dlsym(h, name);
             if (addr) return addr;
         }
+#endif
 
         /* Try 3: parse .symtab directly (catches non-exported/static symbols)
          * NOTE: we do this in-process with mmap — no fork, no popen. */
