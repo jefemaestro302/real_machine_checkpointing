@@ -385,8 +385,14 @@ int main(int argc, char *argv[])
                 char *eq = strchr(argv[j], '=');
                 if (eq) {
                     size_t old_len = eq - argv[j];
-                    if (strncmp(cfd->path, argv[j], old_len) == 0 && cfd->path[old_len] == '\0') {
-                        open_path = eq + 1;
+                    if (strncmp(cfd->path, argv[j], old_len) == 0) {
+                        if (cfd->path[old_len] == '\0') {
+                            open_path = eq + 1;
+                        } else {
+                            open_path = malloc(strlen(eq + 1) + strlen(cfd->path + old_len) + 1);
+                            strcpy(open_path, eq + 1);
+                            strcat(open_path, cfd->path + old_len);
+                        }
                         break;
                     }
                 }

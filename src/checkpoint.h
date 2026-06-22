@@ -66,22 +66,34 @@ typedef struct {
 } ckpt_region_t;
 
 /* ------------------------------------------------------------------ */
+/*  Description of an open file descriptor                              */
+/* ------------------------------------------------------------------ */
+typedef struct {
+    int fd;               /* Original file descriptor number */
+    int flags;            /* Open flags (O_RDONLY, O_WRONLY, etc.) */
+    off_t offset;         /* Current read/write head position */
+    char path[256];       /* Absolute path to the file */
+} ckpt_fd_t;
+
+/* ------------------------------------------------------------------ */
 /*  Top-level file header                                               */
 /* ------------------------------------------------------------------ */
 typedef struct {
     uint64_t     magic;
     uint32_t     version;
     uint32_t     num_regions;
+    uint32_t     num_fds;        /* Number of open file descriptors */
     ckpt_regs_t  regs;           /* CPU state at ROI entry */
     uint64_t     roi_entry_rip;  /* RIP we want to jump to after restore */
     uint64_t     stack_va;       /* the stack VA we saved (for the loader) */
-    uint8_t      padding[48];    /* reserved, must be zero */
+    uint8_t      padding[44];    /* reserved, must be zero */
 } ckpt_header_t;
 
 /* ------------------------------------------------------------------ */
-/*  Convenience: total size of the descriptors block                    */
+/*  Convenience: offsets for regions and fds                          */
 /* ------------------------------------------------------------------ */
 #define CKPT_REGIONS_OFFSET  (sizeof(ckpt_header_t))
-#define CKPT_DATA_OFFSET(n)  (CKPT_REGIONS_OFFSET + (n)*sizeof(ckpt_region_t))
+#define CKPT_FDS_OFFSET(num_regions) (CKPT_REGIONS_OFFSET + (num_regions)*sizeof(ckpt_region_t))
+#define CKPT_DATA_OFFSET(num_regions, num_fds) (CKPT_FDS_OFFSET(num_regions) + (num_fds)*sizeof(ckpt_fd_t))
 
 #endif /* CHECKPOINT_H */
