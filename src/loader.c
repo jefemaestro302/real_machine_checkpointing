@@ -140,7 +140,7 @@ static ssize_t read_exact(int fd, void *buf, size_t n)
 typedef struct {
     uint32_t       num_regions;
     uint32_t       _pad;
-    int            ckpt_fd;
+    void          *ckpt_data;     /* mmap'd checkpoint file             */
     ckpt_region_t *descs;         /* region descriptors                 */
     uint64_t       fs_base;       /* TLS fs_base to restore             */
     ucontext_t    *uc;            /* pointer to the ucontext in scratch */
@@ -239,14 +239,7 @@ static void restore_and_jump(restore_ctx_t *ctx)
             perror("mmap");
         } else {
             if (d->data_size > 0) {
-                ssize_t ret = pread_all(ctx->ckpt_fd, m, (size_t)d->data_size, d->file_offset);
-                if (ret != (ssize_t)d->data_size) {
-                    log_str("ERROR: pread_all returned ");
-                    log_hex64(ret);
-                    log_str(" expected ");
-                    log_hex64(d->data_size);
-                    log_str("\n");
-                }
+                memcpy(m, (char *)ctx->ckpt_data + d->file_offset, (size_t)d->data_size);
             }
         }
         mprotect(m, sz, prot);
@@ -352,8 +345,64 @@ int main(int argc, char *argv[])
         log_str(d->name);
         log_str("\n");
     }
-    /* fd is left open for restore_and_jump */
+    /* ---- 3. Read open FDs ---- */
+    size_t fd_sz = hdr.num_fds * sizeof(ckpt_fd_t);
+    ckpt_fd_t *fds = malloc(fd_sz);
+    if (!fds) DIE("OOM fds");
+    if (read_exact(fd, fds, fd_sz) != (ssize_t)fd_sz) DIE("FDs read");
+    
+    for (uint32_t i = 0; i < hdr.num_fds; i++) {
+        log_str("[loader]   FD ");
+        log_hex64(fds[i].fd);
+        log_str("  flags: ");
+        log_hex64(fds[i].flags);
+        log_str("  offset: ");
+        log_hex64(fds[i].offset);
+        log_str("  path: ");
+        log_str(fds[i].path);
+        log_str("\n");
+    }
 
+    /* ---- 3.5. mmap checkpoint file and close fd ---- */
+    off_t file_size = lseek(fd, 0, SEEK_END);
+    if (file_size == (off_t)-1) { perror("lseek SEEK_END"); return 1; }
+    void *ckpt_data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (ckpt_data == MAP_FAILED) { perror("loader: ckpt mmap"); return 1; }
+    close(fd);
+
+    /* ---- 3.6. Restore FDs ---- */
+    for (uint32_t i = 0; i < hdr.num_fds; i++) {
+        ckpt_fd_t *cfd = &fds[i];
+        if (cfd->fd >= 0 && cfd->fd <= 2) continue; // skip 0, 1, 2
+        
+        int target_fd = -1;
+        if ((cfd->flags & O_ACCMODE) == O_WRONLY || (cfd->flags & O_ACCMODE) == O_RDWR) {
+            target_fd = open("/dev/null", O_WRONLY);
+        } else {
+            // Check dynamic remapping from argv
+            char *open_path = cfd->path;
+            for (int j = 2; j < argc; j++) {
+                char *eq = strchr(argv[j], '=');
+                if (eq) {
+                    size_t old_len = eq - argv[j];
+                    if (strncmp(cfd->path, argv[j], old_len) == 0 && cfd->path[old_len] == '\0') {
+                        open_path = eq + 1;
+                        break;
+                    }
+                }
+            }
+            target_fd = open(open_path, cfd->flags);
+        }
+        if (target_fd >= 0) {
+            if (target_fd != cfd->fd) {
+                dup2(target_fd, cfd->fd);
+                close(target_fd);
+            }
+            lseek(cfd->fd, cfd->offset, SEEK_SET);
+        } else {
+            log_str("[loader] Warning: failed to restore fd\n");
+        }
+    }
     /* ---- 4. Allocate scratch page ---- */
     void *scratch = mmap(SCRATCH_VA, SCRATCH_SZ,
                          PROT_READ | PROT_WRITE,
@@ -428,7 +477,7 @@ int main(int argc, char *argv[])
     restore_ctx_t *ctx = (restore_ctx_t *)((char *)scratch + sizeof(ucontext_t) + 4096);
 
     ctx->num_regions = hdr.num_regions;
-    ctx->ckpt_fd     = fd;
+    ctx->ckpt_data   = ckpt_data;
     ctx->descs       = descs;
     ctx->fs_base     = hdr.regs.fs_base;
     ctx->uc          = uc;
