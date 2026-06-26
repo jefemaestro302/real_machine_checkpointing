@@ -13,7 +13,7 @@ CFG_SCRIPT="$TFM_DIR/gem5_scripts/X86/x86_st.py"
 LOADER="$TFM_DIR/repositories/real_machine_checkpoint/build/loader"
 
 # Where we put perlbench and dump
-CHECKPOINT="$HOME/checkpoints/dump_perlbench.ckpt"
+CHECKPOINT="$HOME/checkpoints/dump_perlbench_r_base.test_compilacion-m64.ckpt"
 PERLBENCH_RUN_DIR="$HOME/spec_cpu_2017/benchspec/CPU/500.perlbench_r/run/run_base_train_test_compilacion-m64.0000"
 
 cd $PERLBENCH_RUN_DIR
