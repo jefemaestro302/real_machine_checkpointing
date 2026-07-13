@@ -48,11 +48,9 @@ ckpt_dump:
     movq $0, 184(%rsp)
     movw %gs, 184(%rsp)
     
-    /* fs_base, gs_base */
-    rdfsbase %rax
-    movq %rax, 192(%rsp)
-    rdgsbase %rax
-    movq %rax, 200(%rsp)
+    /* fs_base, gs_base (fetched safely via arch_prctl in C later) */
+    movq $0, 192(%rsp)
+    movq $0, 200(%rsp)
     
     /* Call ckpt_dump_impl(path, &regs) */
     /* path is already in %rdi */

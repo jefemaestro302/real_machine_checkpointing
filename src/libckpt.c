@@ -438,8 +438,14 @@ static void libckpt_init(void)
     unsetenv("LD_PRELOAD");
     g_main_tid = pthread_self();   /* record main thread for directed SIGUSR1 */
 
+    extern char *program_invocation_short_name;
+
     g_output_path = getenv("CKPT_OUTPUT");
-    if (!g_output_path) g_output_path = "libckpt_dump.ckpt";
+    if (!g_output_path) {
+        static char dynamic_path[256];
+        snprintf(dynamic_path, sizeof(dynamic_path), "dump_%s.ckpt", program_invocation_short_name);
+        g_output_path = dynamic_path;
+    }
 
     const char *after_str = getenv("CKPT_AFTER_NS");
     if (after_str) g_after_ns = (uint64_t)strtoull(after_str, NULL, 10);

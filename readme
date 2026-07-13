@@ -109,8 +109,9 @@ defines:
     STATIC_BUILD
 
 funciones:
-
+//Método que intercepta INT3 (instruccion 0xCC) propia de la microarquitectura x86 y calcula la direccion de memoria correcta para la restauracion que, debido a como Linux trata las Traps, será la direccion del RIP menos 1 byte, al ser la instruccion de exactamente 1 byte de largo.
     -static void sigtrap-handler(
         int sig, 
         siginfo_t *info, 
         void *ctx)
+    

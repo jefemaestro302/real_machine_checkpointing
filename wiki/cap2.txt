@@ -1,0 +1,42 @@
+1. El formato ejecutable y enlazable (ELF)
+Aquí debes explicar el punto de partida estático.
+
+Concepto: Define brevemente que en Linux, los programas compilados se almacenan en formato ELF (Executable and Linkable Format).
+
+Estructura del ELF: No hace falta que expliques las cabeceras de compilación, céntrate en los "Segmentos" que se van a cargar en memoria. Explica qué es el segmento .text (código ejecutable de solo lectura), .data (variables globales inicializadas) y .bss (variables no inicializadas).
+
+Conexión: Termina esta parte diciendo que cuando el sistema operativo lanza un programa, su cargador lee este ELF y proyecta estos segmentos en la memoria RAM virtual.
+
+2. El espacio de direcciones virtuales y áreas de memoria (VMA)
+Aquí pasas del disco a la memoria viva.
+
+Concepto de Memoria Virtual: Explica muy rápido que cada proceso en Linux cree que tiene toda la memoria RAM para él solo gracias a la memoria virtual.
+
+Las VMA (Virtual Memory Areas): Este es un concepto clave para tu TFM. Explica que la memoria de un proceso se divide en bloques contiguos llamados VMA. Cada VMA tiene unos permisos específicos (lectura, escritura, ejecución).
+
+El mapa general: Describe cómo se organiza teóricamente la memoria. Abajo el código y los datos (sacados del ELF), luego el Heap (creciendo hacia arriba para memoria dinámica), en medio el mapeo de librerías, y arriba del todo el Stack (la pila, creciendo hacia abajo).
+
+Sugerencia visual: Aquí sería ideal que incluyeras un diagrama clásico de bloque vertical mostrando la disposición de la memoria de un proceso en Linux (Stack, Heap, BSS, Data, Text).
+
+3. La interfaz /proc y la radiografía de un proceso en ejecución
+Aquí aterrizas la teoría en la práctica con tu ejemplo.
+
+El pseudo-sistema de archivos /proc: Explica que Linux expone la información interna del kernel sobre cada proceso a través del directorio /proc/[PID]/.
+
+El archivo maps: Detalla que el archivo /proc/[PID]/maps es la representación en texto plano de las VMA que explicaste antes.
+
+El ejemplo real: Aquí metes tu ejemplo de hacer un "cat" a /proc/self/maps. Muestra un bloque de texto con la salida real.
+
+Desglose de las columnas: Explica qué significa cada columna de ese bloque (Rango de direcciones, Permisos como rwxp, Offset, y la Ruta del archivo mapeado). Esto es crucial, porque tu herramienta lee exactamente esto para saber qué trozos de memoria tiene que volcar a disco y con qué permisos tendrá que restaurarlos el Loader.
+
+4. El contexto de hardware (Registros de la CPU)
+La pieza que faltaba en tu propuesta original.
+
+Concepto: Explica que la memoria por sí sola es un ente inerte. El estado real de la ejecución está dictado por los registros internos del procesador en ese milisegundo exacto.
+
+Registros clave: Menciona la necesidad de salvar los registros de propósito general, pero sobre todo los registros de control: el contador de programa (RIP en x86, que apunta a la siguiente instrucción a ejecutar) y el puntero de pila (RSP, que indica dónde está la cima del stack en la memoria).
+
+5. Conclusión: Requisitos para la persistencia del estado
+El párrafo de cierre que conecta con tu herramienta.
+
+Resumen: Concluye que, por tanto, congelar y reproducir un proceso en Linux requiere extraer dos cosas: una copia exacta (byte a byte) de todas las regiones de memoria válidas descritas en /proc/[PID]/maps, y una fotografía instantánea del estado de los registros de la CPU. Si se logran volcar y posteriormente restaurar ambos elementos respetando las direcciones y permisos originales, el proceso podrá reanudar su ejecución de forma transparente, ignorando que fue pausado.

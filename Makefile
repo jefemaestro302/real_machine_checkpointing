@@ -24,7 +24,7 @@ LOADER_LOAD_ADDR := 0x20000000
 # Source files
 TARGET_SRCS  := src/target_app.c
 LOADER_SRCS  := src/loader.c
-LIBCKPT_SRCS := src/libckpt.c src/dumper.c
+LIBCKPT_SRCS := src/libckpt.c src/dumper.c src/dumper_asm.S
 
 # Output directory
 BUILD_DIR := build

@@ -93,5 +93,6 @@ If none of the automatic triggers are defined, `libckpt` falls back to waiting f
 
 ## Architectural Notes
 - **Static Checkpointing:** Previous versions of this repo used `LD_PRELOAD` with `glibc`. This has been completely removed in favor of static compilation with `musl`, which is much cleaner and totally eliminates `IFUNC` AVX dynamic leakage.
+- **File Descriptor Restoration:** The checkpoint mechanism now automatically tracks and saves the state of open file descriptors (including their file paths, access flags, and current offsets). During restoration, the `loader` dynamically re-opens these files and restores their pointers via `lseek`, allowing the application to seamlessly continue its file I/O operations from exactly where it left off.
 - **`fs_base` Bypass:** The `loader` must invoke the `ARCH_SET_FS` `arch_prctl` syscall and use a small assembly stub to trick the execution context natively to restore Thread Local Storage.
 - **Pure ASM context dump:** We capture the context using pure assembly `dumper_asm.S` to prevent modern compiler optimizations or stack red-zones from corrupting the instruction pointer or stack pointer upon restoration.

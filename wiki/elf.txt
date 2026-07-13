@@ -1,0 +1,112 @@
+========================================================================
+                      ESTRUCTURA DE UN ARCHIVO ELF
+========================================================================
+Este archivo es un volcado (dump) real de un binario ELF de 64 bits. 
+Contiene todas las estructuras fundamentales necesarias para entender 
+cómo el Sistema Operativo (Linux) y las herramientas de desarrollo 
+(enlazadores, depuradores) interpretan un programa ejecutable.
+
+------------------------------------------------------------------------
+1. ENCABEZADO ELF (ELF Header)
+------------------------------------------------------------------------
+Es el bloque inicial del archivo. Define la arquitectura, el tipo de 
+archivo y, lo más importante, dónde se encuentran las dos tablas 
+principales: Program Headers (para el OS) y Section Headers (para gcc/gdb).
+
+  Mágico:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 
+  Clase:                             ELF64
+  Datos:                             complemento a 2, little endian
+  Version:                           1 (current)
+  OS/ABI:                            UNIX - System V
+  Versión ABI:                       0
+  Tipo:                              DYN (Position-Independent Executable file)
+  Máquina:                           Advanced Micro Devices X86-64
+  Versión:                           0x1
+  Dirección del punto de entrada:    0x8c0
+  Inicio de encabezados de programa: 64 (bytes en el fichero)
+  Inicio de encabezados de sección:  30395000 (bytes en el fichero)
+  Opciones:                          0x0
+  Size of this header:               64 (bytes)
+  Size of program headers:           56 (bytes)
+  Number of program headers:         9
+  Size of section headers:           64 (bytes)
+  Number of section headers:         36
+  Section header string table index: 35
+
+------------------------------------------------------------------------
+2. ENCABEZADOS DE PROGRAMA (Program Headers / Segments)
+------------------------------------------------------------------------
+Esta es la tabla que lee el Kernel de Linux al hacer "execve". Define los 
+"Segmentos" que se mapearán en memoria RAM y sus permisos (R, W, E).
+
+  Tipo           Desplazamiento     DirVirtual         DirFísica
+                 TamFichero         TamMemoria          Opts   Alineación
+  PHDR           0x0000000000000040 0x0000000000000040 0x0000000000000040
+                 0x00000000000001f8 0x00000000000001f8  R      0x8
+  INTERP         0x0000000000000238 0x0000000000000238 0x0000000000000238
+                 0x000000000000001c 0x000000000000001c  R      0x1
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+  LOAD           0x0000000000000000 0x0000000000000000 0x0000000000000000
+                 0x0000000001cf9bc0 0x0000000001cf9bc0  R E    0x200000
+  LOAD           0x0000000001cf9da0 0x0000000001ef9da0 0x0000000001ef9da0
+                 0x0000000000000270 0x0000000000000278  RW     0x200000
+  DYNAMIC        0x0000000001cf9db0 0x0000000001ef9db0 0x0000000001ef9db0
+                 0x00000000000001f0 0x00000000000001f0  RW     0x8
+
+------------------------------------------------------------------------
+3. ASIGNACIÓN DE SECCIÓN A SEGMENTO
+------------------------------------------------------------------------
+Muestra cómo las "Secciones" lógicas encajan dentro de los "Segmentos" 
+de memoria reales que el Kernel mapea. Por ejemplo, el segmento 02 
+(que tiene permisos R E) contiene el código ejecutable (.text).
+
+  Segmento Secciones...
+   00     
+   01     .interp 
+   02     .interp .note.ABI-tag .note.gnu.build-id .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt .init .plt .plt.got .text .fini .rodata .eh_frame_hdr .eh_frame 
+   03     .init_array .fini_array .dynamic .got .data .bss 
+   04     .dynamic 
+
+------------------------------------------------------------------------
+4. ENCABEZADOS DE SECCIÓN (Section Headers)
+------------------------------------------------------------------------
+Esta tabla es usada por herramientas como gcc, gdb o tu libckpt.so.
+Divide el archivo en secciones lógicas (.text para código, .data para 
+variables, .symtab para nombres de funciones, etc.)
+
+  [Nr] Nombre            Tipo             Dirección         Despl            Opts
+  [ 0]                   NULL             0000000000000000  00000000
+  [ 1] .interp           PROGBITS         0000000000000238  00000238         A
+  [ 4] .gnu.hash         GNU_HASH         0000000000000298  00000298         A
+  [ 5] .dynsym           DYNSYM           00000000000002b8  000002b8         A
+  [ 6] .dynstr           STRTAB           00000000000003a8  000003a8         A
+  [12] .plt              PROGBITS         0000000000000620  00000620         AX
+  [14] .text             PROGBITS         0000000000000680  00000680         AX
+  [16] .rodata           PROGBITS         0000000000003ae0  00003ae0         A
+  [21] .dynamic          DYNAMIC          0000000001ef9db0  01cf9db0         WA
+  [22] .got              PROGBITS         0000000001ef9fa0  01cf9fa0         WA
+  [23] .data             PROGBITS         0000000001efa000  01cfa000         WA
+  [24] .bss              NOBITS           0000000001efa010  01cfa010         WA
+  [33] .symtab           SYMTAB           0000000000000000  01cfbf60
+  [34] .strtab           STRTAB           0000000000000000  01cfc698
+
+  (Key to Flags: W = write, A = alloc, X = execute)
+
+------------------------------------------------------------------------
+5. TABLAS DE SÍMBOLOS (.dynsym y .symtab)
+------------------------------------------------------------------------
+Diccionarios que asocian nombres de funciones/variables (strings) con 
+sus offsets de memoria relativos. Aquí es donde tu herramienta busca 
+"target_function" o "main".
+
+Symbol table '.dynsym' (Símbolos Dinámicos - Librerías Externas):
+   Num:    Valor          Tam  Tipo    Unión  Vis      Nombre Ind
+     2: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND clock_gettime@GLIBC_2.17
+     4: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND printf@GLIBC_2.2.5
+
+Symbol table '.symtab' (Símbolos Estáticos - Funciones Internas):
+   Num:    Valor          Tam  Tipo    Unión  Vis      Nombre Ind
+    35: 00000000000008f0     0 FUNC    LOCAL  DEFAULT   14 deregister_tm_clones
+    65: 00000000000009d0 12414 FUNC    GLOBAL DEFAULT   14 score
+    69: 00000000000008c0    43 FUNC    GLOBAL DEFAULT   14 _start
+    71: 0000000000000680   562 FUNC    GLOBAL DEFAULT   14 main

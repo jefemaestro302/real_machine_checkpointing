@@ -25,6 +25,9 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <sys/syscall.h>
+#include <asm/prctl.h>
 
 #include "checkpoint.h"
 #include "dumper.h"
@@ -121,6 +124,50 @@ static int parse_maps(ckpt_region_t *regions, int max_regions,
 }
 
 /* ------------------------------------------------------------------ */
+/*  Parse /proc/self/fd and populate fd descriptors                     */
+/* ------------------------------------------------------------------ */
+
+#define MAX_FDS 256
+
+static int parse_fds(ckpt_fd_t *fds, int max_fds, int exclude_fd)
+{
+    int n = 0;
+    /* In simulation environments (like gem5 SE), opendir("/proc/self/fd") 
+       and getdents might not be fully supported or could behave unexpectedly.
+       It is safer to brute-force probe file descriptors up to a typical limit. */
+    for (int fd = 0; fd < 256 && n < max_fds; fd++) {
+        if (fd == exclude_fd) continue;
+
+        /* fcntl(F_GETFL) is a very safe syscall to check if an FD is open */
+        int flags = fcntl(fd, F_GETFL);
+        if (flags == -1) continue;
+
+        char path[256];
+        snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+        
+        char target[256];
+        ssize_t len = readlink(path, target, sizeof(target) - 1);
+        if (len < 0) {
+            /* Fallback if readlink fails in simulation but FD is open */
+            snprintf(target, sizeof(target), "unknown_fd_%d", fd);
+        } else {
+            target[len] = '\0';
+        }
+
+        off_t offset = lseek(fd, 0, SEEK_CUR);
+        if (offset == (off_t)-1) offset = 0;
+
+        fds[n].fd = fd;
+        fds[n].flags = flags;
+        fds[n].offset = offset;
+        strncpy(fds[n].path, target, sizeof(fds[n].path) - 1);
+        fds[n].path[sizeof(fds[n].path) - 1] = '\0';
+        n++;
+    }
+    return n;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Write region payload to file                                         */
 /*  cur_off: current absolute write position in the file (in/out).      */
 /*  This avoids lseek(SEEK_CUR) which is unreliable on network FSes.   */
@@ -189,16 +236,26 @@ int ckpt_dump_impl(const char *path, ckpt_regs_t *r)
 
     fprintf(stderr, "[ckpt] Found %d memory regions\n", num_regions);
 
+    /* Safely fetch fs_base and gs_base via arch_prctl to avoid illegal instructions on older CPUs */
+    syscall(SYS_arch_prctl, ARCH_GET_FS, &r->fs_base);
+    syscall(SYS_arch_prctl, ARCH_GET_GS, &r->gs_base);
+
     /* 3. Open output file */
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) { perror("ckpt: open"); return -1; }
 
-    /* 4. Write placeholder header + region descriptors (we'll patch later) */
+    /* Parse open file descriptors */
+    static ckpt_fd_t fds[MAX_FDS];
+    int num_fds = parse_fds(fds, MAX_FDS, fd);
+    fprintf(stderr, "[ckpt] Found %d open file descriptors\n", num_fds);
+
+    /* 4. Write placeholder header + region descriptors + fd descriptors */
     ckpt_header_t hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.magic = CKPT_MAGIC;
     hdr.version = CKPT_VERSION;
     hdr.num_regions = (uint32_t)num_regions;
+    hdr.num_fds = (uint32_t)num_fds;
     memcpy(&hdr.regs, r, sizeof(ckpt_regs_t));
     hdr.roi_entry_rip = r->rip;
     hdr.stack_va = r->rsp;
@@ -210,6 +267,12 @@ int ckpt_dump_impl(const char *path, ckpt_regs_t *r)
     if (write(fd, regions, num_regions * sizeof(ckpt_region_t)) !=
               (ssize_t)(num_regions * sizeof(ckpt_region_t))) {
         perror("ckpt: write descriptors"); close(fd); return -1;
+    }
+    
+    /* Write FD descriptors */
+    if (write(fd, fds, num_fds * sizeof(ckpt_fd_t)) !=
+              (ssize_t)(num_fds * sizeof(ckpt_fd_t))) {
+        perror("ckpt: write fds"); close(fd); return -1;
     }
 
     /* 5. Write actual memory payloads and record offsets.
