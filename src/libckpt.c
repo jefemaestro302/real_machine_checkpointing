@@ -427,15 +427,11 @@ static void *timer_thread(void *arg)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Constructor: runs when the .so is loaded by the dynamic linker     */
+/*  Constructor: runs when the static object is initialized by the OS  */
 /* ------------------------------------------------------------------ */
 __attribute__((constructor))
 static void libckpt_init(void)
 {
-    /* CRITICAL: remove ourselves from the environment immediately so that
-     * no child process (shells, nm, make, etc.) inherits LD_PRELOAD and
-     * causes a fork bomb by re-loading libckpt.so recursively. */
-    unsetenv("LD_PRELOAD");
     g_main_tid = pthread_self();   /* record main thread for directed SIGUSR1 */
 
     extern char *program_invocation_short_name;
