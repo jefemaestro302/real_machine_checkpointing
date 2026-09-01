@@ -51,8 +51,12 @@ gen() {   # gen <nombre> <dir_run> <binario> <ns> <args...>
 WHAT=${1:-all}
 
 if [ "$WHAT" = "mcf" ] || [ "$WHAT" = "all" ]; then
+    # CKPT_AFTER_NS=5s: cae dentro de la meseta de IPC estable [1,1s-15,9s]
+    # medida con perf en máquina real (IPC nativo ~1,0, CV 12%). 10ms (valor
+    # usado hasta 2026-09-01) capturaba el pico de arranque/parseo de
+    # inp.in, no representativo de la fase de cómputo de mcf.
     gen mcf_r_noavx "$SPEC_DIR/505.mcf_r/run/run_base_train_test_compilacion-m64.0000" \
-        mcf_r_base.test_compilacion-m64 10000000 inp.in
+        mcf_r_base.test_compilacion-m64 5000000000 inp.in
 fi
 if [ "$WHAT" = "perlbench" ] || [ "$WHAT" = "all" ]; then
     gen perlbench_noavx "$SPEC_DIR/500.perlbench_r/run/run_base_train_test_compilacion-m64.0000" \
