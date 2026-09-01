@@ -1,0 +1,114 @@
+# =============================================================================
+# Dockerfile.noavx_glibc
+#
+# Extends the existing tailbench_compiler image to add a glibc built from
+# source with --disable-multi-arch.
+#
+# --disable-multi-arch tells glibc to skip the IFUNC / CPUID CPU-dispatch
+# mechanism entirely.  That means memcpy / memset / strlen etc. will always
+# use the plain SSE2 fallback — no AVX instructions will ever appear in the
+# checkpointed memory, regardless of what the host CPU supports.
+#
+# The new glibc is installed to /opt/glibc-noavx so it doesn't touch the
+# system glibc.  The Silo binary is then launched through its dynamic linker
+# (/opt/glibc-noavx/lib/ld-linux-x86-64.so.2) at checkpoint generation time.
+#
+# Build:
+#   docker build -f docker/Dockerfile.noavx_glibc \
+#                -t tailbench_noavx_glibc .
+# =============================================================================
+
+FROM tailbench_compiler:latest
+
+LABEL description="tailbench_compiler + glibc-2.35 built with --disable-multi-arch (no AVX IFUNCs)"
+
+# ---------------------------------------------------------------------------
+# 1. Install build prerequisites for glibc
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gawk \
+        bison \
+        python3 \
+        texinfo \
+        gettext \
+        libgd-dev \
+        make \
+        gcc \
+        g++ \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 2. Download glibc 2.35 source
+#    We pick 2.35 (Ubuntu 22.04's glibc) because it's stable, well-tested,
+#    and its ABI is forward-compatible with the Ubuntu 18.04 Tailbench binaries
+#    (glibc is backwards-compatible; a newer glibc can run older code).
+# ---------------------------------------------------------------------------
+WORKDIR /opt/glibc-src
+RUN wget -q https://ftp.gnu.org/gnu/glibc/glibc-2.35.tar.xz \
+    && tar -xf glibc-2.35.tar.xz \
+    && rm glibc-2.35.tar.xz
+
+# ---------------------------------------------------------------------------
+# 3. Configure with --disable-multi-arch
+#
+#   --disable-multi-arch  : Disable the IFUNC CPU-dispatch mechanism.
+#                           glibc won't compile the AVX / AVX2 / SSE4
+#                           variants of memcpy, memset, strlen, etc.
+#                           Everything falls back to the generic SSE2 path.
+#   --prefix              : Install to /opt/glibc-noavx (isolated, safe).
+#   --disable-werror      : Ubuntu 18.04's GCC is strict; avoid build errors.
+#   --enable-stack-protector=no : Match the no-stack-protector build style.
+#
+# NOTE: glibc MUST be built out-of-tree.
+# ---------------------------------------------------------------------------
+RUN mkdir /opt/glibc-build && \
+    cd /opt/glibc-build && \
+    /opt/glibc-src/glibc-2.35/configure \
+        --prefix=/opt/glibc-noavx \
+        --host=x86_64-linux-gnu \
+        --build=x86_64-linux-gnu \
+        CC=gcc \
+        CXX=g++ \
+        CFLAGS="-O2 -mno-avx -mno-avx2 -mno-avx512f -U_FORTIFY_SOURCE" \
+        --disable-multi-arch \
+        --disable-werror \
+        --enable-stack-protector=no \
+        --without-selinux \
+        --disable-nscd \
+    2>&1 | tee /opt/glibc-build/configure.log
+
+# ---------------------------------------------------------------------------
+# 4. Build and install (this takes ~5-10 min)
+# ---------------------------------------------------------------------------
+RUN cd /opt/glibc-build && \
+    make -j$(nproc) 2>&1 | tee /opt/glibc-build/make.log && \
+    make install 2>&1 | tee /opt/glibc-build/install.log
+
+# ---------------------------------------------------------------------------
+# 5. Verify: confirm no AVX instructions in the new libc
+# ---------------------------------------------------------------------------
+RUN echo "=== Checking for AVX in new libc.so.6 ===" && \
+    objdump -d /opt/glibc-noavx/lib/libc.so.6 | \
+        grep -iE '\b(vmovaps|vmovups|vmovdqu|vpbroadcast|vpcmpeq|vpand|vmovdqa|vzeroupper|vzeroall|ymm[0-9])\b' | \
+        head -5 | \
+        { read -r line; \
+          if [ -n "$line" ]; then \
+              echo "ERROR: AVX instructions found in new libc!" && echo "$line" && exit 1; \
+          else \
+              echo "OK: No AVX instructions found in new libc.so.6"; \
+          fi; }
+
+# ---------------------------------------------------------------------------
+# 6. Symlink the new ld so it can be used easily
+# ---------------------------------------------------------------------------
+RUN ls /opt/glibc-noavx/lib/ld-linux-x86-64.so.2 && \
+    echo "New dynamic linker ready: /opt/glibc-noavx/lib/ld-linux-x86-64.so.2"
+
+# ---------------------------------------------------------------------------
+# 7. Clean up build artifacts to save space
+# ---------------------------------------------------------------------------
+RUN rm -rf /opt/glibc-src /opt/glibc-build
+
+WORKDIR /tailbench
+CMD ["/bin/bash"]

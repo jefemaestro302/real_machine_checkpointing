@@ -278,8 +278,7 @@ int ckpt_dump_impl(const char *path, ckpt_regs_t *r)
     /* 5. Write actual memory payloads and record offsets.
      * cur_off tracks the absolute file position so we never need lseek(SEEK_CUR),
      * which is unreliable on beegfs / NFS. */
-    uint64_t cur_off = (uint64_t)sizeof(ckpt_header_t) +
-                       (uint64_t)num_regions * sizeof(ckpt_region_t);
+    uint64_t cur_off = (uint64_t)CKPT_DATA_OFFSET(num_regions, num_fds);
     for (int i = 0; i < num_regions; i++) {
         if (dump_region_data(fd, &regions[i], &cur_off) < 0) {
             fprintf(stderr, "[ckpt] Warning: failed to dump region %d (%s)\n",

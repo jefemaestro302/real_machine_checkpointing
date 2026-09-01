@@ -39,6 +39,9 @@ typedef struct {
     uint64_t cs, ss, ds, es, fs, gs;
     /* FS/GS base (TLS) */
     uint64_t fs_base, gs_base;
+    /* FPU / Vector registers (XMM/YMM) */
+    uint32_t fpregs_size;
+    uint8_t fpregs[4096] __attribute__((aligned(64)));
 } ckpt_regs_t;
 
 /* ------------------------------------------------------------------ */

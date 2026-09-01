@@ -248,7 +248,20 @@ static void restore_and_jump(restore_ctx_t *ctx)
         syscall(158, 0x1002, stub_fs_base);
     }
 
+    /* Frontera del ROI: sacamos a gem5 del bucle de simulacion para que el
+     * script de configuracion pueda resetear stats y contar SOLO las
+     * instrucciones del ROI, sin la sobrecarga del loader. La ejecucion
+     * se reanuda en la instruccion siguiente. */
+    __asm__ volatile (
+        "xorq %%rdi, %%rdi\n\t"
+        "xorq %%rsi, %%rsi\n\t"
+        ".byte 0x0F, 0x04; .word 0x21\n\t"   /* m5_exit(0) */
+        : : : "rdi", "rsi", "rax", "memory");
+
     ckpt_regs_t *r = &ctx->regs;
+    if (r->fpregs_size > 0) {
+        __asm__ volatile("fxrstor %0" : : "m" (r->fpregs));
+    }
     __asm__ volatile (
         "movq 0x38(%%rax), %%rsp\n\t"
         "pushq 0x80(%%rax)\n\t"

@@ -31,7 +31,7 @@ BUILD_DIR := build
 
 .PHONY: all clean show_layout
 
-all: $(BUILD_DIR)/target_app $(BUILD_DIR)/loader $(BUILD_DIR)/libckpt_static.o
+all: $(BUILD_DIR)/target_app $(BUILD_DIR)/loader $(BUILD_DIR)/libckpt_static.o $(BUILD_DIR)/libckpt.so
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -54,6 +54,24 @@ $(BUILD_DIR)/libckpt_static.o: $(BUILD_DIR)/libckpt.o $(BUILD_DIR)/dumper.o $(BU
 	ld -r -o $@ $^
 	@echo "Built static checkpoint module at $@"
 	@echo "Usage: $(CC) -static -o your_app your_app.c $(BUILD_DIR)/libckpt_static.o -lpthread"
+
+
+# --- Libreria LD_PRELOAD (libckpt.so) --------------------------------------
+# Se compila SIN -DSTATIC_BUILD para que resolve_symbol() pueda usar dlsym,
+# y con -fPIC porque va en una biblioteca compartida. Este es el binario que
+# usa el flujo de generacion de checkpoints (LD_PRELOAD sobre el benchmark).
+PIC_CFLAGS := $(filter-out -DSTATIC_BUILD,$(CFLAGS)) -fPIC
+
+$(BUILD_DIR)/dumper_pic.o: src/dumper.c src/checkpoint.h src/dumper.h | $(BUILD_DIR)
+	$(CC) $(PIC_CFLAGS) -c -o $@ src/dumper.c
+
+$(BUILD_DIR)/dumper_asm_pic.o: src/dumper_asm.S | $(BUILD_DIR)
+	$(CC) $(PIC_CFLAGS) -c -o $@ src/dumper_asm.S
+
+$(BUILD_DIR)/libckpt.so: src/libckpt.c $(BUILD_DIR)/dumper_pic.o $(BUILD_DIR)/dumper_asm_pic.o src/checkpoint.h | $(BUILD_DIR)
+	$(CC) $(PIC_CFLAGS) -shared -o $@ src/libckpt.c \
+		$(BUILD_DIR)/dumper_pic.o $(BUILD_DIR)/dumper_asm_pic.o -ldl -lpthread
+	@echo "Built libckpt.so at $@"
 
 # --- Target application ---------------------------------------------------
 # Example of an app linking the static checkpointing library.

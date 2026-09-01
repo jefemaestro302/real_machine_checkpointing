@@ -57,7 +57,7 @@ ckpt_dump:
     movq %rsp, %rsi
     /* align stack to 16 bytes before call */
     subq $8, %rsp
-    call ckpt_dump_impl
+    call ckpt_dump_impl@PLT
     addq $8, %rsp
     
     addq $256, %rsp

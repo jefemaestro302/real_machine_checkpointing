@@ -111,6 +111,14 @@ static void do_dump_from_ucontext(ucontext_t *uc)
 
     syscall(158 /*arch_prctl*/, 0x1003 /*ARCH_GET_FS*/, &regs.fs_base);
     syscall(158 /*arch_prctl*/, 0x1004 /*ARCH_GET_GS*/, &regs.gs_base);
+
+    if (uc->uc_mcontext.fpregs) {
+        /* Assuming standard Linux xsave layout or at least fxsave (512 bytes) */
+        regs.fpregs_size = sizeof(struct _libc_fpstate);
+        memcpy(regs.fpregs, uc->uc_mcontext.fpregs, regs.fpregs_size);
+    } else {
+        regs.fpregs_size = 0;
+    }
 #else
 #  error "libckpt only supports x86-64"
 #endif
@@ -123,8 +131,8 @@ static void do_dump_from_ucontext(ucontext_t *uc)
         fprintf(stderr, "[libckpt] ERROR: ckpt_dump_impl returned %d\n", rc);
         _exit(1);
     } else {
-        fprintf(stderr, "[libckpt] Done! Exiting application.\n");
-        _exit(0);
+        fprintf(stderr, "[libckpt] Done! Resuming application.\n");
+        return;
     }
 }
 
@@ -427,11 +435,15 @@ static void *timer_thread(void *arg)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Constructor: runs when the static object is initialized by the OS  */
+/*  Constructor: runs when the .so is loaded by the dynamic linker     */
 /* ------------------------------------------------------------------ */
 __attribute__((constructor))
 static void libckpt_init(void)
 {
+    /* CRITICAL: remove ourselves from the environment immediately so that
+     * no child process (shells, nm, make, etc.) inherits LD_PRELOAD and
+     * causes a fork bomb by re-loading libckpt.so recursively. */
+    unsetenv("LD_PRELOAD");
     g_main_tid = pthread_self();   /* record main thread for directed SIGUSR1 */
 
     extern char *program_invocation_short_name;
