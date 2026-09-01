@@ -45,7 +45,7 @@ args = parser.parse_args()
 
 NT = len(args.ckpts)
 
-# ── Sistema ────────────────────────────────────────────────────────────────
+# -- Sistema ----------------------------------------------------------------
 system = System()
 system.multi_thread = NT > 1
 system.clk_domain   = SrcClockDomain(clock=args.clock, voltage_domain=VoltageDomain())
@@ -73,7 +73,7 @@ if args.pmu:
 
 system.membus = SystemXBar()
 
-# ── Jerarquia de cache (colgada de la CPU activa; el switch la traspasa) ────
+# -- Jerarquia de cache (colgada de la CPU activa; el switch la traspasa) ----
 if not args.no_caches:
     class L1ICache(Cache):
         size = "32kB"; assoc = 8
@@ -119,7 +119,7 @@ system.mem_ctrl.dram       = DDR4_2400_8x8()
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.port       = system.membus.mem_side_ports
 
-# ── Cargas de trabajo: un loader por hilo, cada uno con su checkpoint ───────
+# -- Cargas de trabajo: un loader por hilo, cada uno con su checkpoint -------
 env_list = [f"{k}={v}" for k, v in os.environ.items()]
 procs = [Process(pid=100 + i, executable=args.loader,
                  cmd=[args.loader, ck], env=env_list)
@@ -138,7 +138,7 @@ system.o3.createThreads()
 root = Root(full_system=False, system=system)
 m5.instantiate()
 
-# ── Fase 1: carga ──────────────────────────────────────────────────────────
+# -- Fase 1: carga ----------------------------------------------------------
 print(f"**** FASE 1: {NT} loader(es) en {args.load_cpu} ****", flush=True)
 done = 0
 while done < NT:
@@ -155,7 +155,7 @@ while done < NT:
 load_insts = [system.cpu.getCurrentInstCount(t) for t in range(NT)]
 print(f"**** Carga completa. Instrucciones por hilo: {load_insts} ****", flush=True)
 
-# ── Cambio de CPU ──────────────────────────────────────────────────────────
+# -- Cambio de CPU ----------------------------------------------------------
 print("**** Cambiando a DerivO3CPU"
       f"{'' if args.no_caches else ' (con caches L1/L2)'} ****", flush=True)
 m5.switchCpus(system, [(system.cpu, system.o3)])
@@ -165,7 +165,7 @@ if args.trace_roi:
     from m5.debug import flags
     flags["Exec"].enable()
 
-# ── Fase 2: ROI en O3 ──────────────────────────────────────────────────────
+# -- Fase 2: ROI en O3 ------------------------------------------------------
 for t in range(NT):
     system.o3.scheduleInstStop(t, args.maxinsts,
                                f"ROI: hilo {t} alcanzo {args.maxinsts} instrucciones")

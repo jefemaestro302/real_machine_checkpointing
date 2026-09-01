@@ -146,7 +146,7 @@ static void sigusr1_handler(int sig, siginfo_t *info, void *ctx)
 }
 
 /* ------------------------------------------------------------------ */
-/*  SIGTRAP handler — fired by INT3 at the hooked symbol               */
+/*  SIGTRAP handler -- fired by INT3 at the hooked symbol               */
 /*                                                                      */
 /*  INT3 is a 1-byte instruction (0xCC).  When it executes, the CPU    */
 /*  pushes RIP pointing to the NEXT byte, so we subtract 1 to get the  */
@@ -167,7 +167,7 @@ static void sigtrap_handler(int sig, siginfo_t *info, void *ctx)
     uintptr_t bp_addr = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP] - 1;
 
     if ((void *)bp_addr != g_sym_addr) {
-        /* Not our breakpoint — let default handler take it */
+        /* Not our breakpoint -- let default handler take it */
         fprintf(stderr, "[libckpt] SIGTRAP at unexpected addr 0x%lx, aborting\n",
                 (unsigned long)bp_addr);
         struct sigaction dfl = { .sa_handler = SIG_DFL };
@@ -189,7 +189,7 @@ static void sigtrap_handler(int sig, siginfo_t *info, void *ctx)
     uc->uc_mcontext.gregs[REG_RIP] = (greg_t)bp_addr;
 
     if (call_no < g_sym_target_call) {
-        /* Not yet the target call — re-arm breakpoint after single-step.
+        /* Not yet the target call -- re-arm breakpoint after single-step.
          * We use TF (Trap Flag, bit 8 of RFLAGS) to single-step over the
          * first instruction, then reinstall INT3 in the SIGTRAP that fires. */
         uc->uc_mcontext.gregs[REG_EFL] |= (1 << 8); /* set TF */
@@ -197,7 +197,7 @@ static void sigtrap_handler(int sig, siginfo_t *info, void *ctx)
         return;
     }
 
-    /* This IS the target call — dump checkpoint */
+    /* This IS the target call -- dump checkpoint */
     do_dump_from_ucontext(uc);
     /* Return: kernel restores regs from ucontext, execution continues at
      * the original function (original byte already restored above). */
@@ -214,7 +214,7 @@ static void sigtrap_rearm_or_hook(int sig, siginfo_t *info, void *ctx)
     ucontext_t *uc = (ucontext_t *)ctx;
 
     if (g_rearm_pending) {
-        /* We're here because of TF single-step — reinstall INT3 */
+        /* We're here because of TF single-step -- reinstall INT3 */
         g_rearm_pending = 0;
         uc->uc_mcontext.gregs[REG_EFL] &= ~(greg_t)(1 << 8); /* clear TF */
         page_set_writable(g_sym_addr, 1);
@@ -298,7 +298,7 @@ static void *elf_find_symbol(const char *exe_path, const char *name)
     }
 
     /* Find the executable PT_LOAD segment's p_vaddr to compute the slide.
-     * We look for PF_X (execute bit) — that's the text segment.
+     * We look for PF_X (execute bit) -- that's the text segment.
      * slide = load_base - p_vaddr
      * runtime_addr = sym.st_value + slide
      */
@@ -374,7 +374,7 @@ static void *resolve_symbol(const char *name)
 #endif
 
         /* Try 3: parse .symtab directly (catches non-exported/static symbols)
-         * NOTE: we do this in-process with mmap — no fork, no popen. */
+         * NOTE: we do this in-process with mmap -- no fork, no popen. */
         addr = elf_find_symbol(exe_path, name);
         if (addr) return addr;
     }

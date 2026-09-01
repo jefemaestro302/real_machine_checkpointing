@@ -26,7 +26,7 @@
  *    4. Allocate the scratch page (SCRATCH_VA, PROT_READ|PROT_WRITE)
  *    5. Build restore_ctx_t directly in the scratch page (no ucontext_t)
  *    6. switch_stack_and_restore(ctx, scratch_stack_top)
- *       ↓ (now on scratch stack)
+ *       v (now on scratch stack)
  *    7. restore_and_jump(ctx):
  *         - munmap + mmap(MAP_FIXED) + memcpy + mprotect for each region
  *         - arch_prctl(ARCH_SET_FS) to restore TLS

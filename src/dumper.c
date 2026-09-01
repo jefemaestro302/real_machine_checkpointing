@@ -194,7 +194,7 @@ static int dump_region_data(int fd, ckpt_region_t *reg, uint64_t *cur_off)
         ssize_t r = write(fd, ptr + written, chunk);
         if (r <= 0) {
             if (errno == EFAULT) {
-                /* Page not readable (e.g. guard page) — zero-fill */
+                /* Page not readable (e.g. guard page) -- zero-fill */
                 static const uint8_t zeros[4096] = {0};
                 ssize_t zr = write(fd, zeros, chunk);
                 written += (zr > 0 ? (size_t)zr : chunk);

@@ -7,7 +7,7 @@
  *
  * The dump file layout is:
  *   [ckpt_header_t]
- *   [N × ckpt_region_t]   (region descriptors, N == header.num_regions)
+ *   [N x ckpt_region_t]   (region descriptors, N == header.num_regions)
  *   [raw bytes for each region, in order]
  */
 

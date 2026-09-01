@@ -32,7 +32,7 @@ parser.add_argument("--trace-roi", action="store_true",
                     help="Activar el flag de depuracion Exec SOLO durante el ROI")
 args = parser.parse_args()
 
-# ── Sistema ────────────────────────────────────────────────────────────────
+# -- Sistema ----------------------------------------------------------------
 system = System()
 system.clk_domain = SrcClockDomain(clock="2GHz", voltage_domain=VoltageDomain())
 system.mem_mode   = "timing" if args.cpu == "timing" else "atomic"
@@ -87,7 +87,7 @@ system.mem_ctrl.dram       = DDR4_2400_8x8()
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.port       = system.membus.mem_side_ports
 
-# ── Proceso ────────────────────────────────────────────────────────────────
+# -- Proceso ----------------------------------------------------------------
 env_list = [f"{k}={v}" for k, v in os.environ.items()]
 process = Process(pid=100, executable=args.cmd,
                   cmd=[args.cmd] + args.options.split(), env=env_list)
@@ -98,7 +98,7 @@ system.cpu.createThreads()
 root = Root(full_system=False, system=system)
 m5.instantiate()
 
-# ── Fase 1: loader ─────────────────────────────────────────────────────────
+# -- Fase 1: loader ---------------------------------------------------------
 print(f"**** FASE 1: restaurando checkpoint en {args.cpu} ****", flush=True)
 exit_event  = m5.simulate()
 cause       = exit_event.getCause()
@@ -112,7 +112,7 @@ if cause != "m5_exit instruction encountered":
     print(f"Exited @ tick {m5.curTick()} because {cause}")
     raise SystemExit(1)
 
-# ── Fase 2: ROI ────────────────────────────────────────────────────────────
+# -- Fase 2: ROI ------------------------------------------------------------
 m5.stats.reset()
 if args.trace_roi:
     # Se activa aqui, no al arrancar, para no trazar los millones de
