@@ -9,7 +9,7 @@ print_regs.c
 fix_loader.patch
 SESSION_SUMMARY.md
 scratch/
-example
+/example
 
 # SPEC CPU2017 es software con licencia y son solo binarios/datos de entrada:
 # se instala aparte, no se versiona. Solo conservamos nuestra config de build
@@ -26,38 +26,38 @@ example
 src/loader
 src/loader_static
 src/loader_asm
-loader
-loader_asm
-loader_opt
-target_app
+/loader
+/loader_asm
+/loader_opt
+/target_app
 target_app2
 test_m5
-example
+/example
 m5out*/
 .vscode/
 
 # El TFM y su material (documento, graficas, datos) viven aparte de la herramienta
-tfm_corregido/
-tfm_original/
-tfm_datos_experimentales.txt
-anexo_codigo.txt
-fix_tfm*.py
-generate_latex_appendix.py
-grafico_*.png
-grafico_*.pdf
-plot*.py
-count_zeros*.py
-parse_stats.py
+/tfm_corregido/
+/tfm_original/
+/tfm_datos_experimentales.txt
+/anexo_codigo.txt
+/fix_tfm*.py
+/generate_latex_appendix.py
+/grafico_*.png
+/grafico_*.pdf
+/plot*.py
+/count_zeros*.py
+/parse_stats.py
 
 # Scripts de exploracion puntual y variantes experimentales
-test_*.py
-test_m5.c
-target_app2.c
+/test_*.py
+/test_m5.c
+/target_app2.c
 src/loader_asm.c
-gem5_noavx.cfg
-x86_*.py
-wait_jobs.sh
-launch_scaling.sh
-measure_*.sh
-future_opt*/
-altek1.gap.upv./
+/gem5_noavx.cfg
+/x86_*.py
+/wait_jobs.sh
+/launch_scaling.sh
+/measure_*.sh
+/future_opt*/
+/altek1.gap.upv./
