@@ -78,7 +78,7 @@ $(BUILD_DIR)/libckpt.so: src/libckpt.c $(BUILD_DIR)/dumper_pic.o $(BUILD_DIR)/du
 $(BUILD_DIR)/target_app: $(TARGET_SRCS) $(BUILD_DIR)/libckpt_static.o | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) \
 		-no-pie \
-		-o $@ $(TARGET_SRCS) $(BUILD_DIR)/libckpt_static.o
+		-o $@ $(TARGET_SRCS) $(BUILD_DIR)/libckpt_static.o -lpthread
 	@echo "Built statically linked target_app at $@"
 
 # --- Custom Loader --------------------------------------------------------
