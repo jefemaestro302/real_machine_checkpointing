@@ -1,31 +1,44 @@
 /**
- * loader.c - Custom static loader for checkpoint restore (v4)
+ * loader.c - Custom static loader for checkpoint restore
  *
  * Key architectural insight:
- *   - Loader .text:  0x20000000+ (via -Wl,-Ttext-segment=0x20000000)
- *   - Target app:    0x400000 - 0x1505000 (from dump)
- *   - Stack (target): 0x7ffffffdd000 - 0x7ffffffff000
+ *   - Loader .text:   0x20000000+ (via -Wl,-Ttext-segment=0x20000000)
+ *   - Target app:     0x400000+ (from dump, application-dependent)
+ *   - Target stack:   restored at its original checkpoint address
  *
  * The loader's .text is NEVER clobbered by the restore.
- * The loader's STACK (originally low, from execv) IS clobbered when we
+ * The loader's STACK (originally low, from execve) IS clobbered when we
  * restore the target's stack region.
  *
- * Solution: switch to a scratch stack at 0x7F0000000000 BEFORE the
- * restore loop, then do all restores on the scratch stack, then call
- * setcontext() to jump to ROI.
+ * Solution: switch to a scratch stack at SCRATCH_VA (0x7E0000000000) BEFORE
+ * the restore loop, then do all restores on the scratch stack. Unlike
+ * earlier revisions of this file, no ucontext_t/setcontext() is involved
+ * anymore: the restore_ctx_t is built directly in the scratch page and the
+ * CPU state is loaded with raw inline assembly.
  *
  * Flow:
  *  main():
- *    1. Read dump header + descriptors
- *    2. Load all region payloads into heap buffers
- *    3. Allocate scratch page (0x7F0000000000, PROT_RW)
- *    4. Build ucontext_t in scratch page
- *    5. switch_to_scratch_and_restore(bufs, descs, uc, num_regions,
- *                                     scratch_stack_top)
+ *    1. Read dump header + region descriptors + FD descriptors
+ *    2. mmap() the checkpoint file (the payload stays mapped, it is not
+ *       copied into heap buffers)
+ *    3. Restore file descriptors (reopen + dup2 + lseek, with optional
+ *       path remapping supplied via argv as OLD_PREFIX=NEW_PREFIX)
+ *    4. Allocate the scratch page (SCRATCH_VA, PROT_READ|PROT_WRITE)
+ *    5. Build restore_ctx_t directly in the scratch page (no ucontext_t)
+ *    6. switch_stack_and_restore(ctx, scratch_stack_top)
  *       ↓ (now on scratch stack)
- *    6. restore_all_regions()  [mmap + memcpy + mprotect for each]
- *    7. arch_prctl ARCH_SET_FS
- *    8. setcontext(uc)  -> jumps to ROI
+ *    7. restore_and_jump(ctx):
+ *         - munmap + mmap(MAP_FIXED) + memcpy + mprotect for each region
+ *         - arch_prctl(ARCH_SET_FS) to restore TLS
+ *         - m5_exit(0): gem5-only pseudo-instruction marking the ROI
+ *           boundary, so the simulation script can reset stats and switch
+ *           to a detailed CPU model before the target resumes. This is a
+ *           no-op outside gem5 SE mode; the loader only ever runs inside it.
+ *         - fxrstor from ckpt_regs_t.fpregs restores the FPU/SSE state
+ *         - inline assembly restores the general-purpose registers and
+ *           RFLAGS, sets %rsp to the checkpointed stack pointer, and
+ *           executes `ret`, which resumes execution at the address on top
+ *           of that restored stack
  *
  * Compilation:
  *   gcc -O2 -static -no-pie -fno-stack-protector \
@@ -123,13 +136,12 @@ static ssize_t read_exact(int fd, void *buf, size_t n)
 /* ------------------------------------------------------------------ */
 /*  Scratch page layout                                                  */
 /*                                                                       */
-/*  0x7F0000000000  +-----------------------------------------------+  */
-/*                  | ucontext_t  (968 bytes)                       |  */
-/*                  +-----------------------------------------------+  */
-/*                  | restore_ctx (num_regions, bufs*, descs*, fs)  |  */
-/*                  +-----------------------------------------------+  */
-/*  + STACK_OFF     | Scratch stack (grows downward from top)       |  */
-/*                  +-----------------------------------------------+  */
+/*  SCRATCH_VA        +-----------------------------------------------+ */
+/*  (0x7E0000000000)  | restore_ctx_t (num_regions, ckpt_data*,       | */
+/*                    | descs*, fs_base, vdso/vvar bookkeeping, regs) | */
+/*                    +-----------------------------------------------+ */
+/*  + STACK_OFF       | Scratch stack (grows downward from top)       | */
+/*                    +-----------------------------------------------+ */
 /* ------------------------------------------------------------------ */
 #define SCRATCH_VA     ((void *)0x7E0000000000ULL)
 #define SCRATCH_SZ     (131072)                  /* 128 KB, plenty   */
