@@ -78,7 +78,7 @@ bench_missing() {
 # Docker), asi que solo se usa el nombre del ejecutable: runcpu lo copia al
 # directorio de ejecucion.
 _bench_from_speccmds() {
-    local f=$1 line i stdin
+    local f=$1 line i stdin t
     local -a tok
     [ -f "$f" ] || return 1
     while IFS= read -r line || [ -n "$line" ]; do
@@ -97,7 +97,13 @@ _bench_from_speccmds() {
         done
         [ $i -lt ${#tok[@]} ] || continue
         BENCH_BIN=${tok[$i]##*/}
-        BENCH_ARGS=("${tok[@]:$((i + 1))}")
+        # specinvoke repite al final las redirecciones en sintaxis de shell
+        # ("< in > out 2>> err"); ya van en -i/-o/-e y no son argumentos
+        BENCH_ARGS=()
+        for t in "${tok[@]:$((i + 1))}"; do
+            case "$t" in '<'*|'>'*|[0-9]'>'*) break ;; esac
+            BENCH_ARGS+=("$t")
+        done
         BENCH_STDIN=${stdin##*/}
         return 0
     done < "$f"

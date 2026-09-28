@@ -88,7 +88,10 @@ esac
 [ -n "$BINPATH" ] && [ -f "$BINPATH" ] || die "no se encuentra el binario $1 (relativo a $DIR)"
 if readelf -lW "$BINPATH" 2>/dev/null | grep -q "program interpreter"; then
     KIND=dynamic
-    n=$(objdump -d "$BINPATH" 2>/dev/null | grep -cE '%ymm|%zmm|vpbroadcast|vzeroupper|vmovdq|bextr|shlx|sarx|shrx')
+    # Solo la columna de la instruccion: en el texto completo tambien salen
+    # nombres de simbolos (gcc_r tiene gen_avx_vzeroupper, vzeroupper_operation...)
+    n=$(objdump -d --no-show-raw-insn "$BINPATH" 2>/dev/null | awk -F'\t' 'NF >= 2 {print $2}' \
+        | grep -cE '%ymm|%zmm|^(vpbroadcast|vzeroupper|vmovdq|bextr|shlx|sarx|shrx)')
     [ "${n:-0}" -eq 0 ] || die "$BINPATH contiene $n instrucciones AVX/BMI2 que gem5 SE no implementa (recompila sin AVX, p.ej. specs/config/gem5_noavx.cfg)"
 else
     # En un estatico la glibc trae variantes AVX que solo se eligen en tiempo
