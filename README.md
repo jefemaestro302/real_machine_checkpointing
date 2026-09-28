@@ -145,7 +145,8 @@ launch_scripts/e2e_altek.sh --spec mcf,perlbench   # + SPEC
 Compila, genera los checkpoints, los sube a altek con el repo compilado, lanza
 un trabajo SLURM que los restaura en gem5 y comprueba su salida, espera y
 devuelve el veredicto (0 exito, 1 fallo, 2 error de preparacion). Detalle de
-cada prueba en `docs/VERIFICACION_GEM5.md`.
+cada prueba en `docs/VERIFICACION_GEM5.md`; guia para lanzarlo y diagnosticar
+fallos en `HANDOFF.md`.
 
 ### 6. Instalar en el cluster
 

@@ -73,6 +73,9 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ "$SPEC_LIST" = all ] && SPEC_LIST="${RMC_BENCHMARKS// /,}"
+# Ruta fisica: el cwd y los FDs del checkpoint la llevan sin enlaces
+# simbolicos, y el remapeo SPEC_DIR=SPEC_REMOTE_DIR tiene que coincidir
+[ -d "$SPEC_DIR" ] && SPEC_DIR="$(cd "$SPEC_DIR" && pwd -P)"
 
 # ---- Utilidades --------------------------------------------------------------
 T0=$(date +%s)

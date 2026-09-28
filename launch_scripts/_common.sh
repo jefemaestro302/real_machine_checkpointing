@@ -1,7 +1,10 @@
 # _common.sh - Rutas compartidas por los lanzadores. Se resuelve todo a partir
 # de la ubicacion del propio script, para que el repo sea la unica fuente de
 # verdad y no haya copias sueltas divergiendo en el cluster.
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# pwd -P: ruta fisica. El checkpoint guarda las rutas de los FDs y el cwd tal
+# como las da el kernel (sin enlaces simbolicos), y los remapeos OLD=NEW que
+# se construyen a partir de REPO tienen que coincidir con ellas.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 GEM5_BIN="${GEM5_BIN:-$HOME/gap_gem5/gem5/build/X86/gem5.opt}"
 # LOADER restaura checkpoints no PIE; LOADER_PIE los PIE (SPEC, la mayoria de
