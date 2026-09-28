@@ -25,7 +25,7 @@ import m5
 from m5.objects import *
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rmc_common import pick_loader
+from rmc_common import pick_loader, process_cwd
 
 parser = argparse.ArgumentParser(description="Arnes rapido (CPU simple) para restaurar checkpoints RMC")
 parser.add_argument("--cmd",      type=str, required=True, help="Binario loader")
@@ -97,10 +97,14 @@ system.mem_ctrl.port       = system.membus.mem_side_ports
 # -- Proceso ----------------------------------------------------------------
 env_list = [f"{k}={v}" for k, v in os.environ.items()]
 opts = args.options.split()
+if opts:
+    # Absoluta: el proceso arranca en el cwd del checkpoint, no en el de gem5
+    opts[0] = os.path.abspath(opts[0])
 loader = pick_loader(opts[0], args.cmd) if opts else args.cmd
-print(f"**** Loader: {loader} ****", flush=True)
+cwd = process_cwd(opts[0], opts[1:]) if opts else os.getcwd()
+print(f"**** Loader: {loader}   cwd: {cwd} ****", flush=True)
 process = Process(pid=100, executable=loader,
-                  cmd=[loader] + opts, env=env_list)
+                  cmd=[loader] + opts, env=env_list, cwd=cwd)
 system.workload     = SEWorkload.init_compatible(loader)
 system.cpu.workload = process
 system.cpu.createThreads()

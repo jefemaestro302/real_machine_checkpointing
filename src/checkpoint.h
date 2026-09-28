@@ -73,8 +73,12 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 /*  Description of an open file descriptor                              */
 /* ------------------------------------------------------------------ */
+/* Pseudo-descriptor (fd == CKPT_FD_CWD) holding the working directory, so
+ * that relative paths opened during the ROI resolve like on the host. */
+#define CKPT_FD_CWD (-100)
+
 typedef struct {
-    int fd;               /* Original file descriptor number */
+    int fd;               /* Original file descriptor number (or CKPT_FD_CWD) */
     int flags;            /* Open flags (O_RDONLY, O_WRONLY, etc.) */
     off_t offset;         /* Current read/write head position */
     char path[256];       /* Absolute path to the file */

@@ -554,12 +554,25 @@ static int is_regular_file_path(const char *p)
 /*  File descriptor restore                                              */
 /* ------------------------------------------------------------------ */
 static void restore_fds(const ckpt_fd_t *fds, uint32_t num_fds,
-                        char **remaps, int nremaps)
+                        char **remaps, int nremaps, int native)
 {
     for (uint32_t i = 0; i < num_fds; i++) {
         const ckpt_fd_t *cfd = &fds[i];
         int acc = cfd->flags & O_ACCMODE;
         const char *path = remap_path(cfd->path, remaps, nremaps);
+
+        if (cfd->fd == CKPT_FD_CWD) {
+            /* In gem5 the working directory is set by the config through
+             * Process(cwd=...): a chdir() here would also move the host cwd
+             * of gem5 itself (and the PMU CSVs it writes with relative
+             * paths). Natively the loader applies it. */
+            if (native && chdir(path) < 0) {
+                log_str("[loader] WARNING: cannot chdir to the checkpoint cwd: ");
+                log_str(path);
+                log_str("\n");
+            }
+            continue;
+        }
         int regular = is_regular_file_path(path);
         int target_fd;
 
@@ -826,7 +839,7 @@ int main(int argc, char *argv[])
         log_str(fds[i].path);
         log_str("\n");
     }
-    restore_fds(fds, hdr.num_fds, remaps, nremaps);
+    restore_fds(fds, hdr.num_fds, remaps, nremaps, native);
 
     /* ---- 4. Allocate scratch page ---- */
     void *scratch = mmap(SCRATCH_VA, SCRATCH_SZ,

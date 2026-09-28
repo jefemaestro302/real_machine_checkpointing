@@ -7,6 +7,7 @@ ROIRIP_OFF, STACKVA_OFF   = 4416, 4424
 REGION_SZ, FD_SZ          = 104, 272
 CKPT_MAGIC, CKPT_VERSION  = 0x474D35434B505400, 2
 CKPT_FLAG_HEAP            = 0x04
+CKPT_FD_CWD               = -100
 
 RNAMES = ["rax","rbx","rcx","rdx","rsi","rdi","rbp","rsp",
           "r8","r9","r10","r11","r12","r13","r14","r15",
@@ -67,7 +68,10 @@ def main(path, extra_addr=None):
 
     print("\n--- FDs ---")
     for fd, fl, off, p in fds:
-        print(f"  fd={fd} flags=0x{fl:x} offset={off} path={p}")
+        if fd == CKPT_FD_CWD:
+            print(f"  cwd={p}")
+        else:
+            print(f"  fd={fd} flags=0x{fl:x} offset={off} path={p}")
 
     targets = [("ROI RIP", roi_rip)]
     if extra_addr:

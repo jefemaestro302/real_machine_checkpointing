@@ -247,6 +247,22 @@ static int parse_fds(ckpt_fd_t *fds, int max_fds, int exclude_fd)
         fds[n].path[sizeof(fds[n].path) - 1] = '\0';
         n++;
     }
+
+    /* Working directory as a pseudo-descriptor (readlink is signal-safe) */
+    if (n < max_fds) {
+        char cwd[sizeof(fds[0].path)];
+        ssize_t len = readlink("/proc/self/cwd", cwd, sizeof(cwd) - 1);
+        if (len > 0 && (size_t)len < sizeof(cwd) - 1) {
+            cwd[len] = '\0';
+            memset(&fds[n], 0, sizeof(fds[n]));
+            fds[n].fd = CKPT_FD_CWD;
+            fds[n].flags = O_RDONLY | O_DIRECTORY;
+            memcpy(fds[n].path, cwd, (size_t)len + 1);
+            n++;
+        } else {
+            ckpt_log("[ckpt] WARNING: working directory not recorded\n");
+        }
+    }
     return n;
 }
 

@@ -36,7 +36,7 @@ import m5
 from m5.objects import *
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rmc_common import pick_loader
+from rmc_common import pick_loader, process_cwd
 
 parser = argparse.ArgumentParser(description="RMC: carga en CPU simple, ROI en DerivO3CPU")
 parser.add_argument("--loader",   type=str, required=True, help="Binario loader (no PIE)")
@@ -143,12 +143,16 @@ if NT > 1:
     barrier = os.path.join(os.path.abspath(m5.options.outdir), "rmc_barrier")
     open(barrier, "w").close()          # vacio: cada loader anade un byte
     extra.append(f"--barrier={barrier}:{NT}")
-loaders = [pick_loader(ck, args.loader, args.loader_pie) for ck in args.ckpts]
-for ck, ld in zip(args.ckpts, loaders):
-    print(f"  {os.path.basename(ck)} -> {os.path.basename(ld)}", flush=True)
+# Rutas absolutas: cada proceso arranca en el cwd de su checkpoint
+ckpts = [os.path.abspath(ck) for ck in args.ckpts]
+remaps = args.loader_opts.split()
+loaders = [pick_loader(ck, args.loader, args.loader_pie) for ck in ckpts]
+cwds = [process_cwd(ck, remaps) for ck in ckpts]
+for ck, ld, cwd in zip(ckpts, loaders, cwds):
+    print(f"  {os.path.basename(ck)} -> {os.path.basename(ld)}  cwd={cwd}", flush=True)
 procs = [Process(pid=100 + i, executable=ld,
-                 cmd=[ld, ck] + extra, env=env_list)
-         for i, (ck, ld) in enumerate(zip(args.ckpts, loaders))]
+                 cmd=[ld, ck] + extra, env=env_list, cwd=cwd)
+         for i, (ck, ld, cwd) in enumerate(zip(ckpts, loaders, cwds))]
 
 system.workload     = SEWorkload.init_compatible(loaders[0])
 system.cpu.workload = procs
