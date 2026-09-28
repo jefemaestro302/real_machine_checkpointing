@@ -42,7 +42,7 @@ la memoria restaurada y la aplicacion ejecuta basura.
 | `gem5_configs/x86_mixed.py` | Carga en CPU simple + ROI en DerivO3CPU con caches (ST y SMT-N) |
 | `gem5_configs/x86_st_timing.py` | Todo en una CPU simple: bucle rapido de depuracion |
 | `gem5_configs/rmc_common.py` | Eleccion automatica de loader segun el checkpoint |
-| `launch_scripts/` | Lanzadores (generacion, simulacion, analisis de stats) |
+| `launch_scripts/` | Lanzadores: generacion unica (`gen_ckpt.sh`, `benchmarks.sh`), simulacion, prueba e2e en altek (`e2e_altek.sh`), analisis de stats |
 | `tools/ckpt_inspect.py` | Diseccion de un `.ckpt`: cabecera, registros, regiones, FDs, bytes en RIP, loader recomendado |
 | `test/` | Pruebas nativas del flujo (`run_native_tests.sh`) |
 | `docs/` | Bugs corregidos (`BUG_FIXES.md`) y como verificarlos en gem5 (`VERIFICACION_GEM5.md`) |
@@ -60,25 +60,31 @@ test/run_native_tests.sh # pruebas del flujo en la maquina real, sin gem5
 
 ### 2. Generar un checkpoint
 
+Siempre con `launch_scripts/gen_ckpt.sh`, el unico camino de generacion (lo
+usan todos los scripts), para que todos los checkpoints salgan en las mismas
+condiciones:
+
 ```bash
-setarch -R env LD_PRELOAD=./build/libckpt.so CKPT_AFTER_NS=10000000 \
-    CKPT_OUTPUT=dump.ckpt ./mi_benchmark args...
+launch_scripts/gen_ckpt.sh -t 10000000 -o dump.ckpt -- ./mi_benchmark args...
+launch_scripts/gen_ckpt.sh -s mi_funcion_roi:3 -o dump.ckpt -C run_dir -- ./app   # 3a llamada
+launch_scripts/gen_ckpt.sh -w -o dump.ckpt -- ./app_estatica dump.ckpt           # ckpt_dump() propio
 ```
 
-- `setarch -R` desactiva ASLR (direcciones reproducibles; sin el, el heap de un
-  binario estatico no PIE puede caer encima del loader y este se niega a
-  restaurar). Tiene que **envolver** a `env`: libckpt.so quita `LD_PRELOAD`
-  del entorno del proceso que la carga, asi que con
-  `env LD_PRELOAD=... setarch -R ./app` la app arrancaria sin la libreria.
-- El volcado se escribe en `dump.ckpt.tmp` y se renombra a `dump.ckpt` solo
-  cuando esta completo.
+Que fija: ASLR desactivado (`setarch -R` envolviendo a `env`), `GLIBC_TUNABLES`
+sin AVX/SSE4, `LD_BIND_NOW=1`, `libckpt.so` por `LD_PRELOAD`, stdin
+`/dev/null` (o `-i FICHERO`), comprobacion de AVX/BMI2 en el binario, espera
+al volcado completo (se escribe en `.tmp` y se renombra al final) y validacion.
+Deja junto al checkpoint `.log`, `.stdout`, `.inspect` y `.meta` (condiciones
+de generacion). `gen_ckpt.sh --help` para todas las opciones.
+
+Por debajo usa las variables de `libckpt.so`:
 
 | Variable | Efecto |
 |---|---|
 | `CKPT_OUTPUT` | Ruta del `.ckpt` (por defecto `dump_<programa>.ckpt`) |
-| `CKPT_AFTER_NS` | Vuelca tras N nanosegundos de ejecucion |
-| `CKPT_AT_SYMBOL` | Vuelca al llamar a una funcion (breakpoint INT3, con parser ELF propio para binarios PIE) |
-| `CKPT_AT_SYMBOL_CALL` | Espera a la N-esima invocacion (por defecto 1) |
+| `CKPT_AFTER_NS` | Vuelca tras N nanosegundos de ejecucion (`-t`) |
+| `CKPT_AT_SYMBOL` | Vuelca al llamar a una funcion (breakpoint INT3, con parser ELF propio para binarios PIE) (`-s`) |
+| `CKPT_AT_SYMBOL_CALL` | Espera a la N-esima invocacion (por defecto 1) (`-s SIM:N`) |
 
 Sin ninguna de ellas, espera un `SIGUSR1`.
 
@@ -86,7 +92,8 @@ Desde codigo (binarios estaticos, `build/libckpt_static.o`): `ckpt_dump(path)`
 devuelve 0 en la ejecucion original, -1 si falla y 1 cuando la ejecucion se
 reanuda desde el checkpoint restaurado.
 
-Para SPEC en el cluster: `launch_scripts/regenerate_ckpt_noavx.sh [mcf|perlbench|all]`.
+SPEC: los benchmarks se definen una vez en `launch_scripts/benchmarks.sh` y se
+generan con `launch_scripts/regenerate_ckpt_noavx.sh [mcf|perlbench|all]`.
 
 ### 3. Probar la restauracion en la maquina real
 
@@ -128,7 +135,19 @@ emite justo antes de saltar al ROI hace `m5.switchCpus()` a `DerivO3CPU`, que
 hereda la jerarquia L1/L2 por `takeOverFrom()`. Las stats se resetean ahi, asi
 que miden solo el ROI.
 
-### 5. Instalar en el cluster
+### 5. Prueba de extremo a extremo en altek (desde el PC)
+
+```bash
+launch_scripts/e2e_altek.sh                        # pruebas de test/
+launch_scripts/e2e_altek.sh --spec mcf,perlbench   # + SPEC
+```
+
+Compila, genera los checkpoints, los sube a altek con el repo compilado, lanza
+un trabajo SLURM que los restaura en gem5 y comprueba su salida, espera y
+devuelve el veredicto (0 exito, 1 fallo, 2 error de preparacion). Detalle de
+cada prueba en `docs/VERIFICACION_GEM5.md`.
+
+### 6. Instalar en el cluster
 
 ```bash
 launch_scripts/install_on_altek.sh          # clona/actualiza y compila en altek

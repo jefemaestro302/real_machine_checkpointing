@@ -4,10 +4,12 @@ Lista de los fallos encontrados en `master` (analisis estatico + pruebas en
 maquina real), con su causa, su arreglo y como se ha comprobado. La forma de
 verificarlos **en gem5** esta en [`VERIFICACION_GEM5.md`](VERIFICACION_GEM5.md).
 
-Pruebas nativas (sin gem5) de todos los que se pueden reproducir en el host:
+Pruebas nativas (sin gem5) de todos los que se pueden reproducir en el host,
+y prueba de extremo a extremo en gem5/altek lanzada desde el PC:
 
 ```bash
-test/run_native_tests.sh 10     # 10 repeticiones de las pruebas aleatorias
+test/run_native_tests.sh 10          # 10 repeticiones de las pruebas aleatorias
+launch_scripts/e2e_altek.sh          # genera, sube, simula en altek y da el veredicto
 ```
 
 Leyenda de la columna "Evidencia":
@@ -132,6 +134,27 @@ Leyenda de la columna "Evidencia":
 | 15 | `elf_find_symbol`: desplazamiento de carga mal si `p_vaddr` no esta alineado a pagina | redondeo a pagina |
 | 16 | Restos de depuracion en el loader (volcaba `/proc/self/maps` al stdout del objetivo, "MAIN FOUND STACK", funciones muertas) | eliminados |
 
+## Generacion: cada script generaba distinto
+
+Habia al menos cinco caminos de generacion (`regenerate_ckpt_noavx.sh`,
+`run_spec_dump.sh` y `generate_all_spec_checkpoints.sh` en Docker con otra
+glibc, los scripts de Tailbench, los de prueba), cada uno con su entorno. Ahora
+**todo checkpoint se genera con `launch_scripts/gen_ckpt.sh`**, y los
+benchmarks SPEC se definen una sola vez en `launch_scripts/benchmarks.sh`.
+`gen_ckpt.sh` fija las condiciones y ademas corrige:
+
+| # | Problema | Arreglo |
+|---|---|---|
+| 17 | El directorio de trabajo no se restauraba: las rutas relativas que el programa abre durante el ROI (p.ej. `perlbench -I./lib`) se resolvian contra el cwd de gem5 | el checkpoint guarda el cwd (pseudo-FD `CKPT_FD_CWD`); las configs lo pasan a `Process(cwd=...)` con los remapeos, y `--native` hace `chdir` |
+| 18 | La entrada estandar se heredaba de quien lanzara el script (terminal, cron...) | `/dev/null` por defecto; `-i FICHERO` (y `BENCH_STDIN`) para los que leen de stdin |
+| 19 | Enlazado perezoso: la primera llamada a una funcion de biblioteca dentro del ROI ejecutaba el resolvedor de ld.so, que salva registros con `xsave`/`xsavec` segun la CPU | `LD_BIND_NOW=1`: todo se resuelve al arrancar |
+| 20 | Cada script comprobaba (o no) el AVX del binario y esperaba el volcado a su manera | comprobacion unica, espera al fichero completo, validacion con `ckpt_inspect.py` y `.meta` con las condiciones de generacion |
+
+Los scripts de Tailbench (`generate_all_checkpoints_noavx.sh`,
+`run_noavx_glibc_checkpoint.sh`) generan con una glibc propia y un `ld.so`
+explicito dentro de Docker; se mantienen marcados como LEGADO y avisan al
+ejecutarse.
+
 ## Scripts
 
 | Fichero | Bug | Arreglo |
@@ -143,16 +166,18 @@ Leyenda de la columna "Evidencia":
 | `test/run_test.sh` | remapeo sin `=`; `rm` de un fichero inexistente con `set -e`; modificaba `test/new_dir/input1.txt` versionado | reescrito en un directorio temporal |
 | `run_example.sh`, `run_noavx_glibc_checkpoint.sh` | loader nativo -> SIGILL; compilacion a mano sin `dumper_asm.S` | `--native`, `make` |
 | `run_gem5.sh` | `se.py` termina en el `m5_exit` sin simular el ROI; `O3CPU` no es valido | atajo a `launch_scripts/` |
-| `test_*_slurm.sh`, `sync_benchmark_to_altek.sh` | ruta `real_machine_checkpoint` (sin "-ing"), `x86_st.py` que no esta en el repo | lanzadores del repo |
+| `test_fd_slurm.sh`, `test_perlbench_slurm.sh` | ruta `real_machine_checkpoint` (sin "-ing"), `x86_st.py` que no esta en el repo | eliminados: los cubre `e2e_altek.sh` (pruebas `fd` y `--spec perlbench`) |
+| `sync_benchmark_to_altek.sh` | misma ruta sin "-ing"; subia la plantilla SLURM eliminada | ruta del repo, sube ambos loaders |
+| `run_spec_dump.sh`, `generate_all_spec_checkpoints.sh` | generaban en Docker con otra glibc y sin desactivar ASLR | Docker solo compila; generan con `regenerate_ckpt_noavx.sh` / `gen_ckpt.sh` |
 
 ## Notas de uso que salen de los arreglos
 
-- **Genera los checkpoints sin ASLR** (`setarch -R`), y con `setarch` *envolviendo*
-  a `env`: `setarch -R env LD_PRELOAD=build/libckpt.so ... ./app`. Al reves
-  (`env LD_PRELOAD=... setarch -R ./app`) libckpt.so se carga en `setarch`, se
-  quita `LD_PRELOAD` del entorno y la app arranca sin la libreria.
+- **Genera siempre con `launch_scripts/gen_ckpt.sh`.** Desactiva ASLR con
+  `setarch -R` *envolviendo* a `env` (al reves, libckpt.so se cargaria en
+  `setarch`, quitaria `LD_PRELOAD` del entorno y la app arrancaria sin ella).
   Con ASLR, el heap de un binario estatico no PIE puede caer encima del loader
-  (`0x20000000`); el loader lo detecta y aborta.
+  (`0x20000000`); el loader lo detecta y aborta. En Docker `setarch -R` no
+  funciona: `gen_ckpt.sh` se niega salvo con `RMC_ALLOW_ASLR=1`.
 - Apps lanzadas con un `ld.so` explicito (scripts de Tailbench): con ASLR su heap
   cae en la zona PIE (usar `loader_pie`); sin ASLR queda junto a ld.so, lejos de
   ambos loaders, y el loader avisa de que no mueve el break.
