@@ -11,9 +11,20 @@ aíslan cada mecanismo y ayudan a diagnosticar si una SPEC falla.
 - La rama `bug-fixes` corrige los bugs de [`docs/BUG_FIXES.md`](docs/BUG_FIXES.md)
   y unifica la generación: **todo** checkpoint sale de
   `launch_scripts/gen_ckpt.sh`, y los benchmarks se definen solo en
-  `launch_scripts/benchmarks.sh` (hoy `mcf` y `perlbench`).
+  `launch_scripts/benchmarks.sh`.
+- **Cubre todas las SPEC rate** (`NNN.*_r`, intrate + fprate) que estén
+  compiladas y preparadas. El comando de cada benchmark se lee del
+  `speccmds.cmd` que deja `runcpu --action=setup` en su directorio de
+  ejecución; si hay varias invocaciones, se usa la primera.
+  - `mcf` y `perlbench` tienen el instante del volcado medido con perf; el
+    resto se vuelca a los 2 s (`RMC_SPEC_NS`). Para probar que el flujo
+    funciona basta; para medir, hay que ajustar ese instante por benchmark.
+  - Las speed (`_s`) no entran: usan OpenMP y el checkpoint es de un solo
+    hilo.
 - `launch_scripts/e2e_altek.sh` hace todo desde el PC: compila, genera,
-  sube, lanza el sbatch, espera y da el veredicto.
+  sube, lanza un array SLURM (una tarea por prueba, 8 a la vez), espera y da
+  el veredicto. Un benchmark que no se pueda generar no para los demás:
+  aparece como `FAIL` con el motivo.
 - Validado fuera de altek: pruebas nativas (16/16) y el orquestador con
   SLURM y gem5 simulados. **Nunca se ha ejecutado contra altek ni contra gem5
   real.** Esta es la primera vez: cualquier fallo es información nueva, no un
@@ -29,8 +40,10 @@ aíslan cada mecanismo y ayudan a diagnosticar si una SPEC falla.
 | Generar checkpoints | **Host del PC, fuera de Docker** | el seccomp de Docker no deja desactivar ASLR (`setarch -R`) |
 | Simular | altek (gem5 vía SLURM) | |
 
-El e2e **no usa Docker**: da por hecho que SPEC ya está compilado en
-`<repo>/specs/benchspec/CPU` con los directorios de ejecución preparados.
+Solo hay una forma de compilar SPEC, y es en Docker:
+`generate_all_spec_checkpoints.sh`. El e2e **no usa Docker**: da por hecho
+que SPEC ya está compilado en `<repo>/specs/benchspec/CPU` con los
+directorios de ejecución preparados.
 
 ## 1. Comprobaciones previas (en el PC)
 
@@ -40,8 +53,7 @@ uname -m                                   # x86_64
 setarch -R true && echo ok                 # si falla: estás dentro de Docker
 for t in gcc make python3 rsync ssh readelf objdump; do command -v $t >/dev/null || echo "falta $t"; done
 ssh altek1.gap.upv.es 'echo ok; ls ~/gap_gem5/gem5/build/X86/gem5.opt; sinfo -s'
-ls specs/benchspec/CPU/505.mcf_r/run/run_base_train_test_compilacion-m64.0000/mcf_r_base.test_compilacion-m64 \
-   specs/benchspec/CPU/500.perlbench_r/run/run_base_train_test_compilacion-m64.0000/perlbench_r_base.test_compilacion-m64
+ls -d specs/benchspec/CPU/*_r/run/run_base_train_test_compilacion-m64.0000   # benchmarks preparados
 ```
 
 - **ssh:** si pide contraseña se pide una vez; la conexión se reutiliza. Para
@@ -49,15 +61,19 @@ ls specs/benchspec/CPU/505.mcf_r/run/run_base_train_test_compilacion-m64.0000/mc
 - **Partición:** el script usa `compute`. Si `sinfo -s` no la lista, pasa
   `--partition <otra>`.
 - **gem5 en otra ruta:** exporta `RMC_GEM5_REMOTE=/ruta/gem5.opt`.
-- **Si faltan los binarios o directorios SPEC,** compílalos en Docker
-  (necesita la imagen `gem5_noavx_env` y el árbol SPEC instalado en `specs/`):
+- **Si faltan benchmarks,** compílalos en Docker. Necesita la imagen
+  `gem5_noavx_env` y el árbol SPEC instalado en `specs/`:
 
   ```bash
-  ./generate_all_spec_checkpoints.sh
+  ./generate_all_spec_checkpoints.sh --build-only          # todas las rate
+  ./generate_all_spec_checkpoints.sh --build-only lbm xz   # solo algunas
   ```
 
-  Ese script compila y prepara en Docker y después genera en el host. Los
-  checkpoints que deja no hacen falta para el e2e.
+  - Compila todas las rate (tarda) y prepara sus directorios `train`.
+  - Al terminar lista los benchmarks preparados y los que no compilaron. Los
+    que no compilan no paran a los demás.
+  - Sin `--build-only`, además genera los checkpoints en el host, pero el
+    e2e genera los suyos.
 
 ## 2. Lanzar
 
@@ -65,12 +81,18 @@ ls specs/benchspec/CPU/505.mcf_r/run/run_base_train_test_compilacion-m64.0000/mc
 launch_scripts/e2e_altek.sh --spec all 2>&1 | tee e2e_$(date +%s).txt; echo "exit=${PIPESTATUS[0]}"
 ```
 
+- `--spec all` = todas las rate preparadas. Para un subconjunto:
+  `--spec mcf,lbm,xz`.
 - Para **solo SPEC,** sin las pruebas de `test/`: añade `--no-tests`.
+- **Recursos por tarea SLURM:** `--time` (03:00:00), `--mem` (16G) y
+  `--parallel` (8 tareas a la vez).
 - Para una ROI más larga: `--spec-insts 100000000`, y sube `--time` si hace
   falta.
-- Duración aproximada: la generación tarda unos segundos por benchmark (mcf
-  se vuelca a los 5 s, perlbench a los 3 s). La subida lleva varios cientos
-  de MB. Las pruebas de `test/` pueden ocupar hasta ~1-2 h en CPU atomic.
+- Duración aproximada:
+  - generación: unos segundos por benchmark (el volcado es a los 2-5 s);
+  - subida: con ~23 benchmarks puede pasar de varios GB de checkpoints;
+  - cada tarea: carga del checkpoint más 10 M instrucciones en CPU atomic,
+    minutos. Las pruebas de `test/` son las más largas (hasta ~1 h).
 - **Si se corta la terminal,** el trabajo sigue en altek. Para
   reengancharse: `launch_scripts/e2e_altek.sh --attach <ID>`, con el `<ID>` =
   `e2e_runs/<ID>` que se imprimió al lanzar.
@@ -108,8 +130,10 @@ Revisa en este orden:
 |---|---|---|
 | `setarch -R no funciona` | ejecutando dentro de Docker | lanzarlo en el host |
 | `gen_ckpt`: el binario tiene AVX/BMI2 | SPEC compilado sin `gem5_noavx.cfg` | recompilar en Docker (`generate_all_spec_checkpoints.sh`) |
-| `[gen] FALLO ...: el programa termino sin generar el checkpoint` | `BENCH_NS` mayor que la duración de la ejecución, o el benchmark falló (ver `.log` y `.stdout`) | bajar `BENCH_NS` en `benchmarks.sh` |
-| `no existe .../run/run_base_train_...` | falta `runcpu --action=setup` | ídem, Docker |
+| `FAIL spec_X: no se genero el checkpoint en el PC: ...` | el motivo viene detrás; el detalle está en `ckpt/gen_X.err` y `ckpt/dump_X_r_noavx.ckpt.log` | según el motivo (filas siguientes) |
+| `[gen] FALLO ...: el programa termino sin generar el checkpoint` | la primera invocación del benchmark dura menos de 2 s, o el benchmark falló (ver `.log` y `.stdout`) | bajar el instante del volcado para ese benchmark con un caso en `bench_def()` de `benchmarks.sh` |
+| `FAIL X: sin resultado (la tarea SLURM no termino...)` | la tarea murió por falta de memoria o de tiempo | `results/slurm-<job>_<n>.out`; relanzar con más `--mem` o `--time` |
+| `benchmark desconocido o sin preparar` / `no hay benchmarks rate preparados` | ese benchmark no está compilado o preparado | `generate_all_spec_checkpoints.sh --build-only <b>` (Docker) |
 | `sbatch fallo` / partición inválida | partición | `--partition` según `sinfo` |
 | `el loader no llego al ROI` + `[loader] FATAL ... overlap` | checkpoint generado con ASLR, o loader equivocado | mirar `.meta` (`RMC_ASLR=off`) y la línea `**** Loader: ...` de gem5.log |
 | `[loader] WARNING: failed to restore fd ...` o `cannot chdir`, y luego falla el programa | un fichero de entrada no está en altek o la ruta no se remapeó | comparar los FDs y el `cwd=` de `.inspect` con `remapeos:` en `summary.txt` |
@@ -137,4 +161,7 @@ En altek todo queda en `~/TFM/rmc_e2e/<ID>/`: `repo/`, `ckpt/`, `results/` y
 - `summary.txt` completo.
 - Por cada `FAIL`: la causa según la tabla de la sección 4 y las ~30 líneas
   relevantes de su `gem5.log`.
+- Una tabla por benchmark SPEC: generado sí/no, PASS/FAIL y motivo. Incluye
+  los que no llegaron a entrar: la línea `sin directorio de ejecucion
+  preparado` del e2e y los que no compilaron en Docker.
 - Si todo pasa: las instrucciones de ROI de cada `spec_<b>` y el tiempo total.

@@ -58,7 +58,7 @@ de segmento) y la salida esperada aparece:
 | `signal_malloc` | PIE, volcado por senal dentro de malloc | >= 2 `MALLOC chunk N ok` sin abortos de glibc | 2, 4 (ampliacion del break, `loader_pie`) |
 | `vdso` | PIE | >= 2 `CLOCK round N ok` y ningun `CLOCK STUCK` | 11 |
 | `smt2` | `static_malloc` + `signal_malloc` en SMT-2 (O3) | `SMT barrier passed` en los dos procesos, cada uno con su loader | 4, 10 |
-| `spec_<b>` | benchmark de `benchmarks.sh` | llega a `--spec-insts` instrucciones de ROI | todo el flujo, cwd y remapeo de SPEC |
+| `spec_<b>` | cada benchmark rate preparado (`--spec all`), comando de su `speccmds.cmd` | llega a `--spec-insts` instrucciones de ROI | todo el flujo, cwd y remapeo de SPEC |
 
 Las pruebas que no terminan solas (`redzone`, `signal_malloc`, `vdso`) se
 limitan con `--maxinsts` e imprimen una linea por ronda: lo que se comprueba es

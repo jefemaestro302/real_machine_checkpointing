@@ -7,9 +7,11 @@
 #   1. compila el repo en el PC (make)
 #   2. genera los checkpoints con gen_ckpt.sh (el mismo camino que cualquier
 #      otro checkpoint): las pruebas de test/ y, con --spec, los benchmarks
-#      de benchmarks.sh
+#      de benchmarks.sh. Un benchmark que no se pueda generar (AVX, termina
+#      antes del volcado...) cuenta como prueba fallida y no para el resto.
 #   3. sube a altek el repo compilado, los checkpoints y sus entradas
-#   4. crea el trabajo SLURM (tests.tsv + run.env) y lo lanza con sbatch
+#   4. crea el trabajo SLURM (tests.tsv + run.env) y lo lanza con sbatch como
+#      array: una tarea por prueba, hasta --parallel a la vez
 #   5. espera a que termine, trae los resultados y devuelve el veredicto:
 #        0 = todas las pruebas pasan, 1 = alguna falla,
 #        2 = error de preparacion (compilacion, generacion, ssh, slurm)
@@ -25,11 +27,14 @@
 #   spec_<nombre>  (--spec) el benchmark llega a --spec-insts de ROI
 #
 # Opciones:
-#   --spec LISTA        benchmarks de benchmarks.sh (coma) o "all"
+#   --spec LISTA        benchmarks (coma: mcf,lbm,...) o "all" = todos los
+#                       rate con directorio de ejecucion preparado en SPEC_DIR
 #   --spec-insts N      instrucciones de ROI por benchmark (10000000)
 #   --no-tests          solo SPEC, sin las pruebas de test/
 #   --partition P       particion SLURM (compute)
-#   --time T            limite del trabajo (04:00:00)
+#   --time T            limite de cada tarea (03:00:00)
+#   --mem M             memoria de cada tarea (16G; "0" = no pedirla)
+#   --parallel N        tareas a la vez (8)
 #   --clean             borrar los checkpoints de altek si todo pasa
 #   --attach ID         reengancharse a una ejecucion ya lanzada (si se corto
 #                       la terminal): espera, trae resultados y da el veredicto
@@ -56,7 +61,9 @@ REMOTE_BASE="${RMC_REMOTE_BASE:-TFM/rmc_e2e}"
 SPEC_DIR="${SPEC_DIR:-$REPO/specs/benchspec/CPU}"
 POLL="${RMC_POLL:-20}"
 PART="${RMC_PARTITION:-compute}"
-TIME="04:00:00"
+TIME="03:00:00"
+MEM="${RMC_MEM:-16G}"
+PARALLEL="${RMC_MAX_PARALLEL:-8}"
 SPEC_LIST=""; SPEC_INSTS=10000000; RUN_TESTS=1; CLEAN=0; ATTACH=""
 
 while [ $# -gt 0 ]; do
@@ -66,16 +73,23 @@ while [ $# -gt 0 ]; do
         --no-tests)   RUN_TESTS=0; shift ;;
         --partition)  PART=$2; shift 2 ;;
         --time)       TIME=$2; shift 2 ;;
+        --mem)        MEM=$2; shift 2 ;;
+        --parallel)   PARALLEL=$2; shift 2 ;;
         --clean)      CLEAN=1; shift ;;
         --attach)     ATTACH=$2; shift 2 ;;
         -h|--help)    sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
         *) echo "opcion desconocida: $1 (--help)" >&2; exit 2 ;;
     esac
 done
-[ "$SPEC_LIST" = all ] && SPEC_LIST="${RMC_BENCHMARKS// /,}"
 # Ruta fisica: el cwd y los FDs del checkpoint la llevan sin enlaces
 # simbolicos, y el remapeo SPEC_DIR=SPEC_REMOTE_DIR tiene que coincidir
 [ -d "$SPEC_DIR" ] && SPEC_DIR="$(cd "$SPEC_DIR" && pwd -P)"
+SPEC_MISSING=""
+if [ "$SPEC_LIST" = all ]; then
+    SPEC_LIST="$(bench_list | paste -sd, -)"
+    SPEC_MISSING="$(bench_missing | paste -sd' ' -)"
+    [ -n "$SPEC_LIST" ] || { echo "RESULTADO: ERROR DE PREPARACION: no hay benchmarks rate preparados en $SPEC_DIR (generate_all_spec_checkpoints.sh --build-only)" >&2; exit 2; }
+fi
 
 # ---- Utilidades --------------------------------------------------------------
 T0=$(date +%s)
@@ -116,6 +130,8 @@ wait_and_verdict() {
     step "Esperando al trabajo $JOB (particion $PART; consulta cada ${POLL}s)"
     local last="" st misses=0
     while :; do
+        # Array: una linea por tarea (o por bloque de pendientes); se muestra
+        # el recuento por estado
         st=$(remote "squeue -h -j $JOB -o %T 2>&1")
         if [ $? -ne 0 ]; then
             if [[ "$st" == *"Invalid job id"* ]]; then break; fi
@@ -125,14 +141,19 @@ wait_and_verdict() {
         fi
         misses=0
         [ -z "$st" ] && break
+        st=$(sort <<< "$st" | uniq -c | awk '{printf "%s%s=%s", (NR>1?" ":""), $2, $1}')
         if [ "$st" != "$last" ]; then
             echo "    [$(( $(date +%s) - T0 ))s] $JOB: $st"; last=$st
         fi
         sleep "$POLL"
     done
     local acct
-    acct=$(remote "sacct -j $JOB -X -n -P -o State,ExitCode 2>/dev/null | head -1")
+    acct=$(remote "sacct -j $JOB -X -n -P -o State 2>/dev/null" | sort | uniq -c \
+           | awk '{printf "%s%s=%s", (NR>1?" ":""), $2, $1}')
     echo "    trabajo terminado: ${acct:-estado no disponible (sacct)}"
+
+    # Resumen en altek a partir del resultado de cada tarea
+    remote "bash '$REMOTE_RUN/repo/launch_scripts/e2e_job.sh' --summary '$REMOTE_RUN' >/dev/null 2>&1"
 
     step "Trayendo resultados a $LOCAL_RUN/results"
     mkdir -p "$LOCAL_RUN/results"
@@ -255,17 +276,29 @@ REMAPS+=("$WORK=$REMOTE_RUN/work")
 SPEC_DIRS=()
 if [ -n "$SPEC_LIST" ]; then
     step "Generando los checkpoints SPEC: $SPEC_LIST"
+    [ -n "$SPEC_MISSING" ] && echo "    sin directorio de ejecucion preparado (no entran): $SPEC_MISSING"
     IFS=',' read -r -a benches <<< "$SPEC_LIST"
+    ngen=0
     for b in "${benches[@]}"; do
-        bench_def "$b" || infra_fail "benchmark desconocido: $b (launch_scripts/benchmarks.sh)"
-        [ -d "$SPEC_DIR/$BENCH_RUNDIR" ] || infra_fail "no existe $SPEC_DIR/$BENCH_RUNDIR (SPEC_DIR)"
+        b=${b#*.}; b=${b%_r}
+        [ -d "$SPEC_DIR" ] || infra_fail "no existe SPEC_DIR=$SPEC_DIR"
+        bench_def "$b" || infra_fail "benchmark desconocido o sin preparar: $b (en $SPEC_DIR/NNN.${b}_r/run/ falta $(_bench_rundir_name)/speccmds.cmd)"
         bench_stdin_opt "$SPEC_DIR"
-        "$GEN" -C "$SPEC_DIR/$BENCH_RUNDIR" -t "$BENCH_NS" ${BENCH_STDIN_OPT[@]+"${BENCH_STDIN_OPT[@]}"} \
-            -o "$CK/dump_${BENCH_CKPT}.ckpt" -- "./$BENCH_BIN" "${BENCH_ARGS[@]}" \
-            || infra_fail "generacion de $b"
-        add_test "spec_$b" st "ckpt/dump_${BENCH_CKPT}.ckpt" "$SPEC_INSTS" "ROI terminado: 'ROI: " 1 "" 7200
-        SPEC_DIRS+=("$BENCH_RUNDIR")
+        # Un fallo de generacion no para los demas: queda como prueba fallida
+        err="$CK/gen_$b.err"
+        if "$GEN" -C "$SPEC_DIR/$BENCH_RUNDIR" -t "$BENCH_NS" ${BENCH_STDIN_OPT[@]+"${BENCH_STDIN_OPT[@]}"} \
+               -o "$CK/dump_${BENCH_CKPT}.ckpt" -- "./$BENCH_BIN" ${BENCH_ARGS[@]+"${BENCH_ARGS[@]}"} 2> "$err"; then
+            cat "$err" >&2
+            add_test "spec_$b" st "ckpt/dump_${BENCH_CKPT}.ckpt" "$SPEC_INSTS" "ROI terminado: 'ROI: " 1 "" 7200
+            SPEC_DIRS+=("$BENCH_RUNDIR")
+            ngen=$((ngen + 1))
+        else
+            cat "$err" >&2
+            why=$(grep -E 'FALLO|ERROR|error|no se' "$err" | head -1 | tr '\t' ' ')
+            add_test "spec_$b" genfail - - "${why:-ver ckpt/gen_$b.err}" - - -
+        fi
     done
+    echo "    SPEC: $ngen de ${#benches[@]} checkpoints generados"
     REMAPS+=("$SPEC_DIR=$SPEC_REMOTE_DIR")
 fi
 
@@ -296,13 +329,17 @@ done
 echo "    $(du -sh "$CK" | cut -f1) de checkpoints, $(wc -l < "$TESTS") pruebas"
 
 # ---- 4. Trabajo SLURM ----------------------------------------------------------------
-step "Lanzando el trabajo SLURM"
-JOB=$(remote "sbatch --parsable -J rmc_e2e -p '$PART' -t '$TIME' -c 1 \
-        -D '$REMOTE_RUN' -o '$REMOTE_RUN/results/slurm-%j.out' \
-        '$REMOTE_RUN/repo/launch_scripts/e2e_job.sh' '$REMOTE_RUN'") \
-    || infra_fail "sbatch fallo: $JOB"
-JOB="${JOB%%;*}"
-[[ "$JOB" =~ ^[0-9]+$ ]] || infra_fail "sbatch devolvio '$JOB'"
+NTESTS=$(wc -l < "$TESTS")
+MEMOPT=""; [ "$MEM" != 0 ] && MEMOPT="--mem=$MEM"
+step "Lanzando el trabajo SLURM ($NTESTS tareas, $PARALLEL a la vez)"
+SB=$(remote "sbatch --parsable -J rmc_e2e -p '$PART' -t '$TIME' -c 1 $MEMOPT \
+        --array=1-$NTESTS%$PARALLEL \
+        -D '$REMOTE_RUN' -o '$REMOTE_RUN/results/slurm-%A_%a.out' \
+        '$REMOTE_RUN/repo/launch_scripts/e2e_job.sh' '$REMOTE_RUN' 2>&1") \
+    || infra_fail "sbatch fallo: $SB"
+# --parsable: "ID" o "ID;cluster" (puede venir tras avisos en stderr)
+JOB=$(grep -oE '^[0-9]+' <<< "$SB" | tail -1)
+[ -n "$JOB" ] || infra_fail "sbatch devolvio '$SB'"
 {
     printf 'JOB=%q\nREMOTE=%q\nREMOTE_RUN=%q\nPART=%q\nCLEAN=%q\n' \
         "$JOB" "$REMOTE" "$REMOTE_RUN" "$PART" "$CLEAN"

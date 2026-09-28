@@ -1,10 +1,11 @@
 #!/bin/bash
 # regenerate_ckpt_noavx.sh - Genera los checkpoints SPEC aptos para gem5 SE.
 #
-#   ./regenerate_ckpt_noavx.sh [mcf|perlbench|...|all]...
+#   ./regenerate_ckpt_noavx.sh [mcf|lbm|...|all]...
 #
-# Los benchmarks (directorio, binario, argumentos, instante del volcado) estan
-# en benchmarks.sh, y la generacion la hace gen_ckpt.sh: ambos son la unica
+# "all" = todos los benchmarks rate con directorio de ejecucion preparado.
+# Los benchmarks (directorio, binario, argumentos, instante del volcado) salen
+# de benchmarks.sh, y la generacion la hace gen_ckpt.sh: ambos son la unica
 # fuente de verdad, asi que un checkpoint sale igual lo genere este script,
 # e2e_altek.sh o cualquier otro.
 #
@@ -31,11 +32,12 @@ mkdir -p "$CKPT_DIR"
 
 WHAT=("$@")
 [ ${#WHAT[@]} -eq 0 ] && WHAT=(all)
-[ "${WHAT[0]}" = all ] && read -r -a WHAT <<< "$RMC_BENCHMARKS"
+[ "${WHAT[0]}" = all ] && mapfile -t WHAT < <(bench_list)
+[ ${#WHAT[@]} -gt 0 ] || die "no hay benchmarks rate preparados en $SPEC_DIR (runcpu --action=setup)"
 
 fails=0
 for b in "${WHAT[@]}"; do
-    bench_def "$b" || die "benchmark desconocido: $b (definelo en launch_scripts/benchmarks.sh)"
+    bench_def "$b" || { echo "benchmark desconocido o sin preparar: $b ($SPEC_DIR)" >&2; fails=$((fails + 1)); continue; }
     bench_stdin_opt "$SPEC_DIR"
     "$HERE/gen_ckpt.sh" -o "$CKPT_DIR/dump_${BENCH_CKPT}.ckpt" -C "$SPEC_DIR/$BENCH_RUNDIR" \
         -t "$BENCH_NS" ${BENCH_STDIN_OPT[@]+"${BENCH_STDIN_OPT[@]}"} -- "./$BENCH_BIN" "${BENCH_ARGS[@]}" \

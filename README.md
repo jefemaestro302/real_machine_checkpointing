@@ -92,8 +92,10 @@ Desde codigo (binarios estaticos, `build/libckpt_static.o`): `ckpt_dump(path)`
 devuelve 0 en la ejecucion original, -1 si falla y 1 cuando la ejecucion se
 reanuda desde el checkpoint restaurado.
 
-SPEC: los benchmarks se definen una vez en `launch_scripts/benchmarks.sh` y se
-generan con `launch_scripts/regenerate_ckpt_noavx.sh [mcf|perlbench|all]`.
+SPEC: se compila solo en Docker (`generate_all_spec_checkpoints.sh
+--build-only [all|bench...]`). Cualquier benchmark rate preparado sirve sin
+tocar nada: `launch_scripts/benchmarks.sh` lee su comando del `speccmds.cmd` de
+runcpu. Se generan con `launch_scripts/regenerate_ckpt_noavx.sh [mcf|lbm|...|all]`.
 
 ### 3. Probar la restauracion en la maquina real
 
