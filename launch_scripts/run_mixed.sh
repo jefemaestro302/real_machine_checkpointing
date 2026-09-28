@@ -20,8 +20,15 @@ MAXINSTS=${1:?falta maxinsts}; shift
 LOADCPU=${1:?falta load-cpu (timing|atomic)}; shift
 PMU=""
 if [ "${1:-}" = "--pmu" ]; then PMU="--pmu"; shift; fi
-CKPTS="$*"
-[ -z "$CKPTS" ] && die "falta al menos un checkpoint"
+[ $# -eq 0 ] && die "falta al menos un checkpoint"
+# Rutas absolutas: gem5 se lanza con el CWD en el outdir (ver arriba), asi que
+# un checkpoint relativo dejaria de encontrarse.
+CKPTS=""
+for c in "$@"; do
+    [ -f "$c" ] || die "no existe el checkpoint $c"
+    CKPTS="$CKPTS $(realpath "$c")"
+done
+CKPTS="${CKPTS# }"
 
 OUTDIR="$OUT_BASE/$TAG"
 mkdir -p "$OUTDIR"
@@ -37,7 +44,8 @@ echo "=================================================="
 
 cd "$OUTDIR"
 "$GEM5_BIN" --outdir="$OUTDIR" "$REPO/gem5_configs/x86_mixed.py" \
-    --loader="$LOADER" \
+    --loader="$(realpath "$LOADER")" \
+    --loader-pie="$(realpath "$LOADER_PIE")" \
     --ckpts $CKPTS \
     --load-cpu="$LOADCPU" \
     --maxinsts="$MAXINSTS" $PMU

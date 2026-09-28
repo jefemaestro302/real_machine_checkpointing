@@ -4,12 +4,16 @@
 #   ./run_st_timing.sh <ckpt> [maxinsts] [timing|atomic] [--caches]
 #
 # Sin O3: la iteracion mas barata para comprobar si un checkpoint restaura.
+# Remapeos de rutas para el loader: LOADER_OPTS="OLD=NEW ...".
+# El loader (build/loader o build/loader_pie) lo elige la config segun el ckpt.
 # Para medir microarquitectura usa run_mixed.sh.
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 check_built
 
 CKPT=${1:?falta el checkpoint}
+[ -f "$CKPT" ] || die "no existe el checkpoint $CKPT"
+CKPT="$(realpath "$CKPT")"
 MAXINSTS=${2:-1000000}
 CPU=${3:-timing}
 EXTRA=${4:-}
@@ -25,7 +29,7 @@ echo " outdir     : $OUTDIR"
 echo "=================================================="
 
 "$GEM5_BIN" --outdir="$OUTDIR" "$REPO/gem5_configs/x86_st_timing.py" \
-    --cmd="$LOADER" --options="$CKPT" \
+    --cmd="$LOADER" --options="$CKPT ${LOADER_OPTS:-}" \
     --cpu="$CPU" --maxinsts="$MAXINSTS" $EXTRA
 RC=$?
 echo ""

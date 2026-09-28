@@ -16,17 +16,34 @@ aborte en el tick 0 con:
 Se sigue el patron de configs/common/Simulation.py: a la CPU switched-out solo
 se le asignan system, clk_domain, workload e isa (compartida), y createThreads().
 
+En SMT-N los loaders se sincronizan con una barrera (--barrier del loader)
+antes de su m5_exit: sin ella, el primer loader en terminar ejecutaria su
+ROI en la CPU simple mientras los demas siguen restaurando, y los ROI no
+empezarian a la vez.
+
+El loader de cada checkpoint se elige solo (build/loader o build/loader_pie,
+ver rmc_common.py).
+
 Uso:
   gem5.opt --outdir=DIR x86_mixed.py --loader LOADER --ckpts A.ckpt [B.ckpt] \
-           [--load-cpu timing|atomic] [--maxinsts 1000000] [--no-caches]
+           [--load-cpu timing|atomic] [--maxinsts 1000000] [--no-caches] \
+           [--loader-opts "OLD=NEW ..."]
 """
 import argparse
 import os
+import sys
 import m5
 from m5.objects import *
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rmc_common import pick_loader
+
 parser = argparse.ArgumentParser(description="RMC: carga en CPU simple, ROI en DerivO3CPU")
-parser.add_argument("--loader",   type=str, required=True, help="Binario loader")
+parser.add_argument("--loader",   type=str, required=True, help="Binario loader (no PIE)")
+parser.add_argument("--loader-pie", type=str, default=None,
+                    help="Loader para checkpoints PIE (por defecto <loader>_pie si existe)")
+parser.add_argument("--loader-opts", type=str, default="",
+                    help="Argumentos extra para todos los loaders (remapeos OLD=NEW)")
 parser.add_argument("--ckpts",    type=str, nargs="+", required=True,
                     help="1 checkpoint (ST) o N checkpoints (SMT-N sobre un core)")
 parser.add_argument("--maxinsts", type=int, default=1000000,
@@ -121,11 +138,19 @@ system.mem_ctrl.port       = system.membus.mem_side_ports
 
 # -- Cargas de trabajo: un loader por hilo, cada uno con su checkpoint -------
 env_list = [f"{k}={v}" for k, v in os.environ.items()]
-procs = [Process(pid=100 + i, executable=args.loader,
-                 cmd=[args.loader, ck], env=env_list)
-         for i, ck in enumerate(args.ckpts)]
+extra = args.loader_opts.split()
+if NT > 1:
+    barrier = os.path.join(os.path.abspath(m5.options.outdir), "rmc_barrier")
+    open(barrier, "w").close()          # vacio: cada loader anade un byte
+    extra.append(f"--barrier={barrier}:{NT}")
+loaders = [pick_loader(ck, args.loader, args.loader_pie) for ck in args.ckpts]
+for ck, ld in zip(args.ckpts, loaders):
+    print(f"  {os.path.basename(ck)} -> {os.path.basename(ld)}", flush=True)
+procs = [Process(pid=100 + i, executable=ld,
+                 cmd=[ld, ck] + extra, env=env_list)
+         for i, (ck, ld) in enumerate(zip(args.ckpts, loaders))]
 
-system.workload     = SEWorkload.init_compatible(args.loader)
+system.workload     = SEWorkload.init_compatible(loaders[0])
 system.cpu.workload = procs
 system.cpu.createThreads()
 
@@ -146,7 +171,12 @@ while done < NT:
     cause = ev.getCause()
     if cause == "m5_exit instruction encountered":
         done += 1
-        print(f"  [loader {done}/{NT}] listo en tick {m5.curTick()}", flush=True)
+        # Instrucciones por hilo en cada m5_exit: tras la barrera, lo que un
+        # hilo avance entre el primer y el ultimo m5_exit es ROI ejecutado en
+        # la CPU simple (debe ser despreciable frente a --maxinsts).
+        counts = [system.cpu.getCurrentInstCount(t) for t in range(NT)]
+        print(f"  [loader {done}/{NT}] listo en tick {m5.curTick()}  insts={counts}",
+              flush=True)
     else:
         print(f"!!! Evento inesperado durante la carga: '{cause}' @ {m5.curTick()}", flush=True)
         print(f"Exited @ tick {m5.curTick()} because {cause}")

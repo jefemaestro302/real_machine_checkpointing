@@ -84,27 +84,11 @@ echo ''
 echo '[2/6] Building libckpt.so and loader...'
 cd /workspace
 
-# Build dumper object (PIC version for the shared lib)
-gcc -O2 -g -Wall -fPIC \
-    -mno-avx -mno-avx2 -mno-avx512f \
-    -c src/dumper.c -o build/dumper_pic.o -Isrc
-
-# Build libckpt.so
-gcc -O2 -g -Wall -fPIC -shared \
-    -mno-avx -mno-avx2 -mno-avx512f \
-    -o build/libckpt.so src/libckpt.c build/dumper_pic.o \
-    -Isrc -ldl -lpthread
-echo '[2/6] libckpt.so built.'
-
-# Build the static loader (used by gem5 to restore the checkpoint)
-gcc -O2 -g -Wall \
-    -mno-avx -mno-avx2 -mno-avx512f \
-    -fno-stack-protector \
-    -static -no-pie \
-    -Wl,-Ttext-segment=0x20000000 \
-    -o build/loader src/loader.c \
-    -Isrc
-echo '[2/6] loader built.'
+# Build through the Makefile: it enforces the no-AVX/static flags and also
+# builds dumper_asm.S and loader_pie (hand-written gcc lines here drifted
+# from the Makefile and missed both).
+make build/libckpt.so build/loader build/loader_pie
+echo '[2/6] libckpt.so, loader and loader_pie built.'
 
 # ---- [3] Build Silo (harness + silo) --------------------------------
 echo ''
@@ -183,9 +167,11 @@ echo "Checkpoint: $CKPT_PATH ($(du -h "$CKPT_PATH" | cut -f1))"
 # STEP 5: Local restore test
 # ---------------------------------------------------------------------------
 echo ""
-echo "[5/6] Local restore test — running checkpoint through ./build/loader"
+echo "[5/6] Local restore test — running checkpoint through the loader (--native)"
 echo "------------------------------------------------------------"
-"$SCRIPT_DIR/build/loader" "$CKPT_PATH" && {
+# --native: skip m5_exit, which is an illegal instruction outside gem5
+LOADER_BIN="$(python3 "$SCRIPT_DIR/gem5_configs/rmc_common.py" "$CKPT_PATH" "$SCRIPT_DIR/build")"
+"$LOADER_BIN" "$CKPT_PATH" --native && {
     echo "[5/6] Local restore: PASSED"
 } || {
     echo "[5/6] Local restore: FAILED (exit code $?)"

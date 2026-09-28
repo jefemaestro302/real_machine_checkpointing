@@ -11,14 +11,21 @@ Fases:
   2. Reseteamos stats y programamos un limite de --maxinsts instrucciones.
   3. Simulamos el ROI y reportamos cuantas instrucciones se ejecutaron.
 
+El loader se elige solo segun el checkpoint (build/loader o
+build/loader_pie, ver rmc_common.py).
+
 Uso:
   gem5.opt --outdir=DIR x86_st_timing.py --cmd LOADER --options "CKPT [remaps]" \
            [--cpu timing|atomic] [--caches] [--maxinsts 1000000]
 """
 import argparse
 import os
+import sys
 import m5
 from m5.objects import *
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rmc_common import pick_loader
 
 parser = argparse.ArgumentParser(description="Arnes rapido (CPU simple) para restaurar checkpoints RMC")
 parser.add_argument("--cmd",      type=str, required=True, help="Binario loader")
@@ -89,9 +96,12 @@ system.mem_ctrl.port       = system.membus.mem_side_ports
 
 # -- Proceso ----------------------------------------------------------------
 env_list = [f"{k}={v}" for k, v in os.environ.items()]
-process = Process(pid=100, executable=args.cmd,
-                  cmd=[args.cmd] + args.options.split(), env=env_list)
-system.workload     = SEWorkload.init_compatible(args.cmd)
+opts = args.options.split()
+loader = pick_loader(opts[0], args.cmd) if opts else args.cmd
+print(f"**** Loader: {loader} ****", flush=True)
+process = Process(pid=100, executable=loader,
+                  cmd=[loader] + opts, env=env_list)
+system.workload     = SEWorkload.init_compatible(loader)
 system.cpu.workload = process
 system.cpu.createThreads()
 

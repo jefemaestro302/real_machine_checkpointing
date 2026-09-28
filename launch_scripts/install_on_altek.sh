@@ -4,7 +4,7 @@
 #   ./install_on_altek.sh [rama]
 #
 # Se ejecuta desde la maquina local. Clona (o actualiza) el repo en altek en
-# ~/TFM/repositories/real_machine_checkpoint y compila alli el loader y
+# ~/TFM/repositories/real_machine_checkpointing y compila alli los loaders y
 # libckpt.so. A partir de ese momento todo se lanza desde el propio repo:
 #
 #   ssh altek1.gap.upv.es
@@ -13,7 +13,7 @@
 # Historicamente convivian tres copias (real_machine_checkpointing/, bk/ y
 # scripts sueltos en ~/TFM/gem5_scripts) que fueron divergiendo. Esto lo
 # sustituye por una sola.
-set -eu
+set -euo pipefail
 
 REMOTE="${REMOTE:-altek1.gap.upv.es}"
 REPO_URL="${REPO_URL:-git@github.com:jefemaestro302/real_machine_checkpointing.git}"
@@ -22,7 +22,7 @@ BRANCH="${1:-master}"
 
 echo "=== Instalando en $REMOTE (rama $BRANCH) ==="
 ssh "$REMOTE" bash -s <<REMOTE_SCRIPT
-set -eu
+set -euo pipefail
 DEST="$DEST"
 if [ -d "\$DEST/.git" ]; then
     echo "[1/2] Actualizando clon existente en \$DEST"
@@ -38,9 +38,13 @@ else
     git checkout "$BRANCH"
 fi
 
-echo "[2/2] Compilando loader y libckpt.so"
-make -C "\$DEST" clean >/dev/null 2>&1 || true
-make -C "\$DEST" "\$DEST/build/loader" "\$DEST/build/libckpt.so" 2>&1 | tail -5
+echo "[2/2] Compilando loaders y libckpt.so"
+make -C "\$DEST" clean >/dev/null
+# Los targets del Makefile son relativos (build/...), no rutas absolutas.
+make -C "\$DEST" build/loader build/loader_pie build/libckpt.so 2>&1 | tail -5
+for f in loader loader_pie libckpt.so; do
+    [ -f "\$DEST/build/\$f" ] || { echo "ERROR: no se genero build/\$f"; exit 1; }
+done
 ls -la "\$DEST/build/"
 REMOTE_SCRIPT
 

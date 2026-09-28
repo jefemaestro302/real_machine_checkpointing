@@ -4,7 +4,10 @@
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 GEM5_BIN="${GEM5_BIN:-$HOME/gap_gem5/gem5/build/X86/gem5.opt}"
+# LOADER restaura checkpoints no PIE; LOADER_PIE los PIE (SPEC, la mayoria de
+# apps dinamicas). Las configs de gem5 eligen entre ambos segun el checkpoint.
 LOADER="${LOADER:-$REPO/build/loader}"
+LOADER_PIE="${LOADER_PIE:-$REPO/build/loader_pie}"
 LIBCKPT="${LIBCKPT:-$REPO/build/libckpt.so}"
 CKPT_DIR="${CKPT_DIR:-$HOME/checkpoints}"
 OUT_BASE="${OUT_BASE:-$HOME/TFM/m5out}"
@@ -12,5 +15,6 @@ OUT_BASE="${OUT_BASE:-$HOME/TFM/m5out}"
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 check_built() {
-    [ -x "$LOADER" ]  || die "no existe $LOADER  (ejecuta: make -C $REPO)"
+    [ -x "$LOADER" ]     || die "no existe $LOADER  (ejecuta: make -C $REPO)"
+    [ -x "$LOADER_PIE" ] || die "no existe $LOADER_PIE  (ejecuta: make -C $REPO)"
 }

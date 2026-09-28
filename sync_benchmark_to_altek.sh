@@ -35,7 +35,10 @@ echo "=== Uploading SLURM script template & loader first ==="
 if [ -f "test_perlbench_slurm.sh" ]; then
     scp test_perlbench_slurm.sh altek1.gap.upv.es:~/TFM/launch_scripts/test_spec_slurm.sh
 fi
-scp build/loader altek1.gap.upv.es:~/TFM/repositories/real_machine_checkpoint/build/loader
+# Misma ruta que install_on_altek.sh / launch_scripts (repo con "-ing")
+ssh altek1.gap.upv.es "mkdir -p ~/TFM/repositories/real_machine_checkpointing/build"
+scp build/loader build/loader_pie \
+    altek1.gap.upv.es:~/TFM/repositories/real_machine_checkpointing/build/
 
 for BENCH in "${BENCHMARKS[@]}"; do
     RUN_DIR="specs/benchspec/CPU/${BENCH}/run/run_base_train_test_compilacion-m64.0000"

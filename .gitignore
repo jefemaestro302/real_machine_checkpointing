@@ -61,3 +61,6 @@ src/loader_asm.c
 /measure_*.sh
 /future_opt*/
 /altek1.gap.upv./
+
+# Python
+__pycache__/

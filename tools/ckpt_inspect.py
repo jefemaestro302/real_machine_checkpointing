@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Inspecciona un .ckpt de RMC: header, registros, regiones, FDs y bytes en RIP."""
-import struct, sys
+import os, struct, sys
 
 HDR_SZ, REGS_OFF, REGS_SZ = 4480, 64, 4352
 ROIRIP_OFF, STACKVA_OFF   = 4416, 4424
 REGION_SZ, FD_SZ          = 104, 272
+CKPT_MAGIC, CKPT_VERSION  = 0x474D35434B505400, 2
+CKPT_FLAG_HEAP            = 0x04
 
 RNAMES = ["rax","rbx","rcx","rdx","rsi","rdi","rbp","rsp",
           "r8","r9","r10","r11","r12","r13","r14","r15",
@@ -17,6 +19,10 @@ def main(path, extra_addr=None):
     nreg, nfds = struct.unpack_from("<II", hdr, 12)
     roi_rip, stack_va = struct.unpack_from("<QQ", hdr, ROIRIP_OFF)
     print(f"magic=0x{magic:x} ver={ver} num_regions={nreg} num_fds={nfds}")
+    if magic != CKPT_MAGIC:
+        print("  !! magic incorrecto: no es un checkpoint RMC")
+    if ver != CKPT_VERSION:
+        print(f"  !! version {ver} != {CKPT_VERSION}: el loader actual lo rechazara, regeneralo")
     print(f"roi_entry_rip=0x{roi_rip:x}  stack_va=0x{stack_va:x}")
 
     vals = struct.unpack_from("<26Q", hdr, REGS_OFF)
@@ -44,6 +50,14 @@ def main(path, extra_addr=None):
         off = struct.unpack_from("<q", b, 8)[0]
         p = b[16:272].split(b"\0")[0].decode(errors="replace")
         fds.append((fd, fl, off, p))
+
+    fsize = os.path.getsize(path)
+    bad = [r for r in regions if r[5] and r[4] + r[5] > fsize]
+    if bad:
+        print(f"\n  !! {len(bad)} regiones con payload fuera del fichero ({fsize} B): checkpoint truncado")
+    heap_end = max([r[1] for r in regions if r[3] & CKPT_FLAG_HEAP] or [0])
+    print(f"\nheap_end=0x{heap_end:x} -> loader recomendado: "
+          f"{'build/loader_pie (PIE)' if heap_end >= 1 << 32 else 'build/loader (no PIE)'}")
 
     print("\n--- REGIONES ---")
     print(f"{'start':>14} {'end':>14} {'sz':>10} {'prot':>5} {'flags':>5} {'file_off':>12} {'data_size':>10}  name")

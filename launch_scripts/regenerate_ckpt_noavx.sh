@@ -29,22 +29,48 @@ check_noavx() {
     echo "  [ok] sin AVX/BMI2: $(basename "$1")"
 }
 
+# ASLR desactivado (como supone el loader): direcciones reproducibles, y los
+# binarios estaticos no PIE no pueden acabar con el heap encima del loader
+# (0x20000000), cosa que la aleatorizacion del brk si permite.
+# setarch envuelve a env, y no al reves: libckpt.so quita LD_PRELOAD del
+# entorno del proceso que la carga, asi que con `env LD_PRELOAD=.. setarch`
+# el benchmark (hijo de setarch) arrancaria SIN la libreria.
+NORAND="setarch -R"
+if ! $NORAND true 2>/dev/null; then
+    echo "AVISO: setarch -R no disponible (p.ej. seccomp de Docker); se genera con ASLR" >&2
+    NORAND=""
+fi
+GEN_TIMEOUT="${GEN_TIMEOUT:-900}"   # segundos maximos hasta tener el volcado
+
 gen() {   # gen <nombre> <dir_run> <binario> <ns> <args...>
     local name=$1 dir=$2 bin=$3 ns=$4; shift 4
     local out="$CKPT_DIR/dump_${name}.ckpt"
+    local log="$CKPT_DIR/gen_${name}.log"
     [ -d "$dir" ] || die "no existe el directorio de ejecucion $dir"
     check_noavx "$dir/$bin"
     echo "=== Generando $name (CKPT_AFTER_NS=$ns) ==="
-    rm -f "$out"
-    ( cd "$dir" && env GLIBC_TUNABLES="$NOAVX" CKPT_AFTER_NS="$ns" \
+    rm -f "$out" "$out.tmp"
+    # exec: el PID de fondo es el propio benchmark, no un subshell que
+    # sobreviviria al kill dejando el benchmark corriendo.
+    ( cd "$dir" && exec $NORAND env GLIBC_TUNABLES="$NOAVX" CKPT_AFTER_NS="$ns" \
         CKPT_OUTPUT="$out" LD_PRELOAD="$LIBCKPT" "./$bin" "$@" \
-        >/dev/null 2>"/tmp/gen_${name}.log" ) &
+        >/dev/null 2>"$log" ) &
     local pid=$!
-    for _ in $(seq 1 300); do [ -f "$out" ] && break; sleep 0.5; done
-    sleep 4
-    kill -9 $pid 2>/dev/null || true
-    wait 2>/dev/null || true
-    grep -E "RIP=|regions|file descriptors|Dump complete" "/tmp/gen_${name}.log" || true
+    # El dumper escribe <out>.tmp y lo renombra a <out> SOLO al terminar: que
+    # exista <out> significa volcado completo. Antes se esperaba a que el
+    # fichero existiera y se mataba 4 s despues, con lo que un volcado lento
+    # (GBs en NFS) quedaba truncado y con los offsets de las regiones a 0.
+    local t=0
+    while [ ! -f "$out" ] && kill -0 "$pid" 2>/dev/null && [ "$t" -lt "$GEN_TIMEOUT" ]; do
+        sleep 1; t=$((t + 1))
+    done
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -f "$out.tmp"
+    grep -E "RIP=|regions|file descriptors|Dump complete|ERROR" "$log" || true
+    if [ ! -f "$out" ] || ! grep -q "Dump complete" "$log"; then
+        die "no se completo el volcado de $name (ver $log)"
+    fi
     ls -la "$out"
 }
 

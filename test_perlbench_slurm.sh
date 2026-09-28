@@ -5,28 +5,22 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --time=24:00:00
+#
+# Simula perlbench desde su checkpoint en gem5 (CPU simple). Los checkpoints
+# generados en Docker guardan rutas /spec2017/...: se remapean a la
+# instalacion local de SPEC.
+#
+#   sbatch test_perlbench_slurm.sh      (desde la raiz del repo)
+set -euo pipefail
+REPO="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+source "$REPO/launch_scripts/_common.sh"
+check_built
 
-# Directory where we uploaded our materials
-TFM_DIR="$HOME/TFM"
-GEM5_BIN="$HOME/gap_gem5/gem5/build/X86/gem5.opt"
-CFG_SCRIPT="$TFM_DIR/gem5_scripts/X86/x86_st.py"
-LOADER="$TFM_DIR/repositories/real_machine_checkpoint/build/loader"
-
-# Where we put perlbench and dump
-CHECKPOINT="$HOME/checkpoints/dump_perlbench_r_base.test_compilacion-m64.ckpt"
+CHECKPOINT="${CHECKPOINT:-$CKPT_DIR/dump_perlbench_noavx.ckpt}"
 PERLBENCH_RUN_DIR="$HOME/spec_cpu_2017/benchspec/CPU/500.perlbench_r/run/run_base_train_test_compilacion-m64.0000"
 
-cd $PERLBENCH_RUN_DIR
-
-echo "=== Running gem5 simulated Perlbench from checkpoint ==="
-# Map /spec2017 (the docker mount path) to the local Altek SPEC CPU path
-export GLIBC_TUNABLES="glibc.cpu.hwcaps=-SSE4_2,-SSE4_1,-SSSE3,-AVX,-AVX2,-AVX512F"
-
-rm -rf m5out
-$GEM5_BIN --outdir=m5out $CFG_SCRIPT \
-    --cmd="$LOADER" \
-    --options="$CHECKPOINT /spec2017/=$HOME/spec_cpu_2017/" \
-    --maxinsts=10000000 \
-    --pmudispatch --pmuissue
-
-echo "=== Done ==="
+cd "$PERLBENCH_RUN_DIR"
+echo "=== gem5: perlbench desde $CHECKPOINT ==="
+LOADER_OPTS="/spec2017/=$HOME/spec_cpu_2017/" \
+    "$REPO/launch_scripts/run_st_timing.sh" "$CHECKPOINT" 10000000 timing
+echo "=== Hecho ==="

@@ -4,49 +4,45 @@
 #SBATCH --error=slurm_test_fd.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --time=00:10:00
+#SBATCH --time=00:30:00
+#
+# Prueba de FDs en gem5: vuelca test_fd en nativo, mueve su fichero de
+# entrada y lo restaura en gem5 con un remapeo OLD=NEW. Ver
+# docs/VERIFICACION_GEM5.md (prueba "FDs").
+#
+#   sbatch test_fd_slurm.sh      (desde la raiz del repo)
+set -euo pipefail
+REPO="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+source "$REPO/launch_scripts/_common.sh"
+check_built
 
-TFM_DIR="$HOME/TFM"
-GEM5_BIN="$HOME/gap_gem5/gem5/build/X86/gem5.opt"
-CFG_SCRIPT="$TFM_DIR/gem5_scripts/X86/x86_st.py"
-LOADER="$TFM_DIR/repositories/real_machine_checkpoint/build/loader"
-TEST_DIR="$TFM_DIR/repositories/real_machine_checkpoint/test"
+WORK="${WORK:-$HOME/TFM/test_fd_gem5}"
+rm -rf "$WORK"; mkdir -p "$WORK"; cd "$WORK"
 
-cd $TEST_DIR
-
-echo "=== Building test program ==="
+echo "=== Compilando test_fd ==="
 gcc -O2 -g -Wall -fno-stack-protector -fno-builtin -static -no-pie \
     -mno-avx -mno-avx2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 \
-    -o test_fd test_fd.c ../src/dumper.c ../src/dumper_asm.S
+    -o test_fd "$REPO/test/test_fd.c" "$REPO/src/dumper.c" "$REPO/src/dumper_asm.S"
 
-echo "=== Setting up input files ==="
-echo -n "1234567890" > input1.txt
-echo -n "ABCDEFGHIJ" > input2.txt
+printf 1234567890 > input1.txt
 
-echo "=== First Run (Dumping Natively) ==="
-export GLIBC_TUNABLES="glibc.cpu.hwcaps=-SSE4_2,-SSE4_1,-SSSE3,-AVX,-AVX2,-AVX512F"
-./test_fd $(pwd)/input1.txt $(pwd)/output.txt
+echo "=== Volcado nativo ==="
+NORAND="setarch -R"; $NORAND true 2>/dev/null || NORAND=""
+$NORAND ./test_fd "$WORK/input1.txt" "$WORK/output.txt"
 
-echo "=== output.txt contents after first run: ==="
-cat output.txt
-echo "========================================="
-
-echo "=== Moving input1.txt to simulate file loss ==="
 mkdir -p new_dir
 mv input1.txt new_dir/input1.txt
 rm -f output.txt
 
-echo "=== Second Run (Restoring in gem5) ==="
-export GLIBC_TUNABLES="glibc.cpu.hwcaps=-SSE4_2,-SSE4_1,-SSSE3,-AVX,-AVX2,-AVX512F"
+echo "=== Restauracion en gem5 ==="
+LOADER_OPTS="$WORK/input1.txt=$WORK/new_dir/input1.txt" \
+OUT_BASE="$WORK" \
+    "$REPO/launch_scripts/run_st_timing.sh" "$WORK/dump.ckpt" 100000000 timing | tee gem5.log
 
-rm -rf m5out
-$GEM5_BIN --outdir=m5out $CFG_SCRIPT --cmd="$LOADER" --options="dump.ckpt $(pwd)/input1.txt=$(pwd)/new_dir/input1.txt" --maxinsts=100000000 --pmudispatch --pmuissue
-
-echo "=== output.txt should not exist (writes sinkholed) ==="
-if [ -f output.txt ]; then
-    echo "ERROR: output.txt was recreated! Sinkhole failed."
-else
-    echo "SUCCESS: output.txt was not created. Writes went to /dev/null."
-fi
-
-echo "=== Done ==="
+echo "=== Comprobaciones ==="
+fail=0
+grep -q "Restored from dump" gem5.log "$WORK"/*/simout 2>/dev/null || { echo "FALLO: no aparece 'Restored from dump'"; fail=1; }
+grep -q "read '67890'" gem5.log "$WORK"/*/simout 2>/dev/null     || { echo "FALLO: el fd de entrada no se restauro en el offset 5"; fail=1; }
+[ ! -e output.txt ] || { echo "FALLO: output.txt se ha recreado (escrituras no sumideradas)"; fail=1; }
+[ $fail -eq 0 ] && echo "OK: prueba de FDs en gem5"
+exit $fail
