@@ -37,12 +37,15 @@ la memoria restaurada y la aplicacion ejecuta basura.
 |---|---|
 | `src/libckpt.c` | Libreria LD_PRELOAD: dispara y captura el checkpoint |
 | `src/dumper.c`, `src/dumper_asm.S` | Serializa registros, VMAs y FDs al `.ckpt` |
-| `src/loader.c` | Restaurador estatico que corre dentro de gem5 |
+| `src/loader.c` | Restaurador estatico que corre dentro de gem5 (`build/loader` para objetivos no PIE, `build/loader_pie` para PIE) |
 | `src/checkpoint.h` | Formato del fichero, compartido por ambos lados |
 | `gem5_configs/x86_mixed.py` | Carga en CPU simple + ROI en DerivO3CPU con caches (ST y SMT-N) |
 | `gem5_configs/x86_st_timing.py` | Todo en una CPU simple: bucle rapido de depuracion |
+| `gem5_configs/rmc_common.py` | Eleccion automatica de loader segun el checkpoint |
 | `launch_scripts/` | Lanzadores (generacion, simulacion, analisis de stats) |
-| `tools/ckpt_inspect.py` | Diseccion de un `.ckpt`: cabecera, registros, regiones, FDs, bytes en RIP |
+| `tools/ckpt_inspect.py` | Diseccion de un `.ckpt`: cabecera, registros, regiones, FDs, bytes en RIP, loader recomendado |
+| `test/` | Pruebas nativas del flujo (`run_native_tests.sh`) |
+| `docs/` | Bugs corregidos (`BUG_FIXES.md`) y como verificarlos en gem5 (`VERIFICACION_GEM5.md`) |
 | `docker/Dockerfile.noavx_glibc` | glibc compilada con `--disable-multi-arch` (sin AVX) |
 | `specs/config/gem5_noavx.cfg` | Config de SPEC CPU2017 que compila sin AVX |
 
@@ -51,28 +54,53 @@ la memoria restaurada y la aplicacion ejecuta basura.
 ### 1. Compilar
 
 ```bash
-make                     # build/loader, build/libckpt.so, build/libckpt_static.o
+make                     # build/loader, build/loader_pie, build/libckpt.so, build/libckpt_static.o
+test/run_native_tests.sh # pruebas del flujo en la maquina real, sin gem5
 ```
 
 ### 2. Generar un checkpoint
 
 ```bash
-LD_PRELOAD=./build/libckpt.so CKPT_AFTER_NS=10000000 \
-CKPT_OUTPUT=dump.ckpt ./mi_benchmark args...
+setarch -R env LD_PRELOAD=./build/libckpt.so CKPT_AFTER_NS=10000000 \
+    CKPT_OUTPUT=dump.ckpt ./mi_benchmark args...
 ```
+
+- `setarch -R` desactiva ASLR (direcciones reproducibles; sin el, el heap de un
+  binario estatico no PIE puede caer encima del loader y este se niega a
+  restaurar). Tiene que **envolver** a `env`: libckpt.so quita `LD_PRELOAD`
+  del entorno del proceso que la carga, asi que con
+  `env LD_PRELOAD=... setarch -R ./app` la app arrancaria sin la libreria.
+- El volcado se escribe en `dump.ckpt.tmp` y se renombra a `dump.ckpt` solo
+  cuando esta completo.
 
 | Variable | Efecto |
 |---|---|
-| `CKPT_OUTPUT` | Ruta del `.ckpt` (por defecto `libckpt_dump.ckpt`) |
+| `CKPT_OUTPUT` | Ruta del `.ckpt` (por defecto `dump_<programa>.ckpt`) |
 | `CKPT_AFTER_NS` | Vuelca tras N nanosegundos de ejecucion |
 | `CKPT_AT_SYMBOL` | Vuelca al llamar a una funcion (breakpoint INT3, con parser ELF propio para binarios PIE) |
 | `CKPT_AT_SYMBOL_CALL` | Espera a la N-esima invocacion (por defecto 1) |
 
 Sin ninguna de ellas, espera un `SIGUSR1`.
 
+Desde codigo (binarios estaticos, `build/libckpt_static.o`): `ckpt_dump(path)`
+devuelve 0 en la ejecucion original, -1 si falla y 1 cuando la ejecucion se
+reanuda desde el checkpoint restaurado.
+
 Para SPEC en el cluster: `launch_scripts/regenerate_ckpt_noavx.sh [mcf|perlbench|all]`.
 
-### 3. Simular
+### 3. Probar la restauracion en la maquina real
+
+```bash
+python3 tools/ckpt_inspect.py dump.ckpt | head      # version, heap, loader recomendado
+setarch -R build/loader_pie dump.ckpt --native      # (build/loader si no es PIE)
+```
+
+`--native` omite el `m5_exit` (en hardware real es una instruccion ilegal).
+Otras opciones del loader: `OLD=NEW` remapea las rutas de los ficheros
+abiertos (`/spec2017/=$HOME/spec_cpu_2017/`), `--barrier=FICHERO:N` sincroniza
+N loaders en SMT (lo pone `x86_mixed.py`).
+
+### 4. Simular
 
 ```bash
 # Depuracion rapida: todo en TimingSimpleCPU
@@ -88,13 +116,19 @@ launch_scripts/run_mixed.sh smt2 10000000 timing --pmu a.ckpt b.ckpt
 launch_scripts/parse_roi_stats.py ~/TFM/m5out/mi_tag
 ```
 
+Las configs eligen solas `build/loader` o `build/loader_pie` segun donde este
+el `[heap]` del checkpoint: el loader mueve el *program break* del proceso al
+final del heap restaurado, y en gem5 el coste es lineal en la distancia (ver
+`docs/BUG_FIXES.md`, bug 4). Remapeos de rutas: `LOADER_OPTS="OLD=NEW"` en
+`run_st_timing.sh`, `--loader-opts` en `x86_mixed.py`.
+
 `x86_mixed.py` ejecuta el loader en una CPU simple (es puro `memcpy`, no aporta
 nada microarquitectonico y en O3 cuesta horas), y en el `m5_exit` que el loader
 emite justo antes de saltar al ROI hace `m5.switchCpus()` a `DerivO3CPU`, que
 hereda la jerarquia L1/L2 por `takeOverFrom()`. Las stats se resetean ahi, asi
 que miden solo el ROI.
 
-### 4. Instalar en el cluster
+### 5. Instalar en el cluster
 
 ```bash
 launch_scripts/install_on_altek.sh          # clona/actualiza y compila en altek
