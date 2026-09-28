@@ -13,6 +13,10 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* Unbuffered: a pending stdout buffer would be part of the checkpoint
+     * and be printed a second time after the restore. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     int fd_in = open(argv[1], O_RDONLY);
     if (fd_in < 0) {
         perror("open input");
@@ -28,17 +32,21 @@ int main(int argc, char *argv[]) {
     char buf[6] = {0};
     
     // 1. Read first 5 bytes from input
-    read(fd_in, buf, 5);
+    (void)!read(fd_in, buf, 5);
     printf("[APP] Before checkpoint: read '%s' from fd %d\n", buf, fd_in);
     
     // 2. Write to output
-    write(fd_out, "HELLO\n", 6);
+    (void)!write(fd_out, "HELLO\n", 6);
     
     printf("[APP] Taking checkpoint now...\n");
-    if (ckpt_dump("dump.ckpt") == 0) {
+    int rc = ckpt_dump("dump.ckpt");
+    if (rc == 0) {
         printf("[APP] First run after dump returned!\n");
+    } else if (rc == 1) {
+        printf("[APP] Restored from dump!\n");
     } else {
-        printf("[APP] Restored from dump! (or dump failed)\n");
+        printf("[APP] Dump FAILED\n");
+        return 1;
     }
 
     // 3. Read next 5 bytes from input
