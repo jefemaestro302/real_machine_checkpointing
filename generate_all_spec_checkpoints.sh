@@ -49,14 +49,30 @@ if ! docker image inspect gem5_noavx_env:latest >/dev/null 2>&1; then
 fi
 
 echo "=== Compilando SPEC en Docker (gem5_noavx.cfg, $RMC_SPEC_SIZE): ${SPEC_NAMES[*]} ==="
+# Directorios de ejecucion viejos fuera: si existen, runcpu --action=setup no
+# reutiliza el .0000 (y menos si run/list apunta a rutas de un arbol movido),
+# sino que crea .0001, .0002..., y benchmarks.sh solo lee el .0000
+if [ "${WHAT[0]}" = all ]; then
+    BENCH_DIRS=("$SPEC_DIR"/*_r)
+else
+    BENCH_DIRS=()
+    for b in "${SPEC_NAMES[@]}"; do BENCH_DIRS+=("$SPEC_DIR"/*."$b"); done
+fi
+for d in "${BENCH_DIRS[@]}"; do
+    [ -d "$d/run" ] || continue
+    rm -rf "$d/run/run_base_${RMC_SPEC_SIZE}_${RMC_SPEC_LABEL}".* "$d/run/list"
+done
+
 # --user: lo que runcpu crea en specs/ queda del usuario del host, que despues
-# ejecuta los benchmarks en esos directorios (escriben sus salidas ahi)
+# ejecuta los benchmarks en esos directorios (escriben sus salidas ahi).
+# --rebuild: sin el, runcpu da por buenos los ejecutables que ya haya en exe/
+# ("Up to date") aunque vengan de otra toolchain
 docker run -i --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
     -v "$(pwd)":/workspace \
     -v "$(pwd)/specs":/spec2017 \
     gem5_noavx_env:latest \
     /bin/bash -c "cd /spec2017; source shrc;
-        runcpu --config=gem5_noavx.cfg --action=build ${SPEC_NAMES[*]}
+        runcpu --config=gem5_noavx.cfg --action=build --rebuild ${SPEC_NAMES[*]}
         runcpu --config=gem5_noavx.cfg --action=setup --size=$RMC_SPEC_SIZE ${SPEC_NAMES[*]}
         exit 0"
 
