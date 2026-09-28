@@ -9,9 +9,10 @@
 
 int main(int argc, char *argv[]) {
     if (argc < 3) {
-        printf("Usage: %s <input_file> <output_file>\n", argv[0]);
+        printf("Usage: %s <input_file> <output_file> [checkpoint (dump.ckpt)]\n", argv[0]);
         return 1;
     }
+    const char *ckpt = argc > 3 ? argv[3] : "dump.ckpt";
 
     /* Unbuffered: a pending stdout buffer would be part of the checkpoint
      * and be printed a second time after the restore. */
@@ -39,7 +40,7 @@ int main(int argc, char *argv[]) {
     (void)!write(fd_out, "HELLO\n", 6);
     
     printf("[APP] Taking checkpoint now...\n");
-    int rc = ckpt_dump("dump.ckpt");
+    int rc = ckpt_dump(ckpt);
     if (rc == 0) {
         printf("[APP] First run after dump returned!\n");
     } else if (rc == 1) {

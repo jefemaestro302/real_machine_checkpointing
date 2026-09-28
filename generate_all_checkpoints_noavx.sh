@@ -1,5 +1,15 @@
 #!/bin/bash
+# -----------------------------------------------------------------------------
+# LEGADO: este script genera checkpoints de Tailbench dentro de Docker con una
+# glibc propia (--disable-multi-arch) lanzada con su ld.so explicito. NO sigue
+# el camino unico de generacion (launch_scripts/gen_ckpt.sh: ASLR desactivado,
+# GLIBC_TUNABLES, LD_BIND_NOW), asi que sus checkpoints no salen en las mismas
+# condiciones que los demas, y con un ld.so explicito el heap queda lejos de
+# los dos loaders (ver docs/BUG_FIXES.md, bug 4). Para una app nueva, generar
+# con gen_ckpt.sh en el host.
+# -----------------------------------------------------------------------------
 set -euo pipefail
+echo "AVISO: $(basename "$0") es un script LEGADO (ver cabecera); el camino unico es launch_scripts/gen_ckpt.sh" >&2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER_IMAGE="tailbench_noavx_glibc"
