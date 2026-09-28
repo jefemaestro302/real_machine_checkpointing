@@ -46,7 +46,8 @@ la memoria restaurada y la aplicacion ejecuta basura.
 | `tools/ckpt_inspect.py` | Diseccion de un `.ckpt`: cabecera, registros, regiones, FDs, bytes en RIP, loader recomendado |
 | `test/` | Pruebas nativas del flujo (`run_native_tests.sh`) |
 | `docs/` | Bugs corregidos (`BUG_FIXES.md`) y como verificarlos en gem5 (`VERIFICACION_GEM5.md`) |
-| `docker/Dockerfile.noavx_glibc` | glibc compilada con `--disable-multi-arch` (sin AVX) |
+| `docker/Dockerfile.spec` | Imagen `gem5_noavx_env`: compiladores para SPEC sin AVX (`generate_all_spec_checkpoints.sh`) |
+| `docker/Dockerfile.noavx_glibc` | glibc compilada con `--disable-multi-arch` (sin AVX; Tailbench, heredado) |
 | `specs/config/gem5_noavx.cfg` | Config de SPEC CPU2017 que compila sin AVX |
 
 ## Uso

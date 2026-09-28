@@ -4,6 +4,10 @@
 #
 #   ./generate_all_spec_checkpoints.sh [--build-only] [all | mcf lbm ...]
 #
+# Requisitos: docker usable sin sudo y SPEC CPU2017 instalado en <repo>/specs
+# (specs/shrc). La imagen gem5_noavx_env se construye si no existe
+# (docker/Dockerfile.spec).
+#
 # - Compilacion: en el contenedor gem5_noavx_env con specs/config/gem5_noavx.cfg
 #   (es la UNICA forma de compilar: siempre en local y en Docker, nunca en el
 #   cluster). `runcpu --action=setup` deja preparado el directorio de
@@ -37,8 +41,17 @@ else
     for b in "${WHAT[@]}"; do b=${b#*.}; SPEC_NAMES+=("${b%_r}_r"); done
 fi
 
+[ -f specs/shrc ] || die "no hay SPEC CPU2017 instalado en $(pwd)/specs (falta specs/shrc; ver HANDOFF.md)"
+[ -f specs/config/gem5_noavx.cfg ] || die "falta specs/config/gem5_noavx.cfg"
+if ! docker image inspect gem5_noavx_env:latest >/dev/null 2>&1; then
+    echo "=== Construyendo la imagen gem5_noavx_env (docker/Dockerfile.spec) ==="
+    docker build -f docker/Dockerfile.spec -t gem5_noavx_env:latest docker/
+fi
+
 echo "=== Compilando SPEC en Docker (gem5_noavx.cfg, $RMC_SPEC_SIZE): ${SPEC_NAMES[*]} ==="
-docker run -i --rm \
+# --user: lo que runcpu crea en specs/ queda del usuario del host, que despues
+# ejecuta los benchmarks en esos directorios (escriben sus salidas ahi)
+docker run -i --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
     -v "$(pwd)":/workspace \
     -v "$(pwd)/specs":/spec2017 \
     gem5_noavx_env:latest \

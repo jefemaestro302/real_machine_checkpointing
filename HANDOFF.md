@@ -6,6 +6,16 @@ checkpoints de SPEC se generan en el PC y se restauran y simulan en gem5 en
 altek. Lo que importa son las SPEC; las pruebas de `test/` acompañan porque
 aíslan cada mecanismo y ayudan a diagnosticar si una SPEC falla.
 
+**Orden de trabajo:**
+1. Comprobaciones previas (§1).
+2. Recompilar SPEC en Docker (§1b).
+3. Lanzar el e2e con `--spec all` (§2).
+4. Interpretar el resultado (§3) y diagnosticar los fallos (§4).
+5. Informar al usuario (§6).
+
+Si algo bloquea (falta SPEC instalado, falta la clave ssh, la partición no
+existe…), párate y pregunta al usuario en lugar de improvisar.
+
 ## Estado
 
 - La rama `bug-fixes` corrige los bugs de [`docs/BUG_FIXES.md`](docs/BUG_FIXES.md)
@@ -36,7 +46,7 @@ aíslan cada mecanismo y ayudan a diagnosticar si una SPEC falla.
 
 | Paso | Dónde | Por qué |
 |---|---|---|
-| Compilar SPEC sin AVX | **Docker** (`gem5_noavx_env`, `specs/config/gem5_noavx.cfg`) | toolchain reproducible; nunca se compila en el clúster |
+| Compilar SPEC sin AVX | **Docker** (`gem5_noavx_env` de `docker/Dockerfile.spec`, `specs/config/gem5_noavx.cfg`) | toolchain reproducible; nunca se compila en el clúster |
 | Generar checkpoints | **Host del PC, fuera de Docker** | el seccomp de Docker no deja desactivar ASLR (`setarch -R`) |
 | Simular | altek (gem5 vía SLURM) | |
 
@@ -48,6 +58,7 @@ directorios de ejecución preparados.
 ## 1. Comprobaciones previas (en el PC)
 
 ```bash
+# repo (si no está clonado: git clone https://github.com/jefemaestro302/real_machine_checkpointing)
 cd <repo> && git fetch origin && git checkout bug-fixes && git pull origin bug-fixes
 uname -m                                   # x86_64
 setarch -R true && echo ok                 # si falla: estás dentro de Docker
@@ -61,19 +72,68 @@ ls -d specs/benchspec/CPU/*_r/run/run_base_train_test_compilacion-m64.0000   # b
 - **Partición:** el script usa `compute`. Si `sinfo -s` no la lista, pasa
   `--partition <otra>`.
 - **gem5 en otra ruta:** exporta `RMC_GEM5_REMOTE=/ruta/gem5.opt`.
-- **Si faltan benchmarks,** compílalos en Docker. Necesita la imagen
-  `gem5_noavx_env` y el árbol SPEC instalado en `specs/`:
+
+## 1b. Recompilar SPEC (en el PC, con Docker)
+
+Hazlo siempre antes del e2e, y en todo caso si faltan benchmarks, si alguno
+falla por AVX o si los binarios son de antes de esta rama. Así todos salen
+de la misma toolchain y la misma config.
+
+**Datos:**
+
+| Qué | Valor |
+|---|---|
+| Árbol SPEC CPU2017 | instalado en `<repo>/specs/`: `specs/shrc`, `specs/bin/`, `specs/benchspec/CPU/`. No se versiona (licencia) |
+| Config | `specs/config/gem5_noavx.cfg` (versionada) |
+| Label | `test_compilacion`, más `-m64`; debe coincidir con `RMC_SPEC_LABEL` |
+| Tuning | `base`, `-O3 -march=x86-64 -mtune=generic`: sin AVX, con 1 copia |
+| Carga | `train` (`RMC_SPEC_SIZE`) |
+| Directorio de ejecución resultante | `specs/benchspec/CPU/<NNN.bench_r>/run/run_base_train_test_compilacion-m64.0000/`, con el binario, las entradas y `speccmds.cmd` |
+| Compiladores | `gcc-11`, `g++-11` y `gfortran-11` en `/usr/bin`, los que pide la config |
+| Imagen Docker | `gem5_noavx_env:latest`, de `docker/Dockerfile.spec` (Ubuntu 22.04). El script la construye si no existe |
+| Host | Linux x86-64 con glibc ≥ 2.35 (Ubuntu 22.04 o posterior): los binarios son dinámicos y se ejecutan fuera del contenedor al generar |
+| Qué compila `all` | las suites `intrate` y `fprate`: los ~23 benchmarks rate |
+
+**Comandos:**
+
+```bash
+docker info >/dev/null && echo docker-ok      # Docker sin sudo (usuario en el grupo docker)
+ls specs/shrc specs/config/gem5_noavx.cfg     # SPEC instalado
+./generate_all_spec_checkpoints.sh --build-only            # todas las rate (horas)
+./generate_all_spec_checkpoints.sh --build-only lbm xz     # solo algunas
+```
+
+- **Qué hace:** construye la imagen si falta y, dentro de ella, ejecuta
+  `runcpu --action=build` y `runcpu --action=setup --size=train`. Corre con el
+  usuario del host (`--user`) para que los ficheros de `specs/` sean suyos.
+- **Resultado:** al final imprime `Preparados: ...` y `SIN preparar: ...`.
+  Un benchmark que no compila no para a los demás; su log está en
+  `specs/benchspec/CPU/<b>/build/build_base_test_compilacion-m64.0000/make.out`.
+- **Sin `--build-only`,** además genera checkpoints en el host. No hace falta
+  para el e2e, que genera los suyos.
+- **Si falla por permisos en `specs/`** (restos de compilaciones anteriores
+  hechas como root): `sudo chown -R "$USER": specs`.
+- **Si SPEC no está instalado en `specs/`,** hay que instalarlo desde la ISO
+  de SPEC CPU2017, y eso lo tiene que hacer el usuario, porque la ISO es suya:
 
   ```bash
-  ./generate_all_spec_checkpoints.sh --build-only          # todas las rate
-  ./generate_all_spec_checkpoints.sh --build-only lbm xz   # solo algunas
+  mount -o loop cpu2017.iso /mnt
+  /mnt/install.sh -d <repo>/specs
   ```
 
-  - Compila todas las rate (tarda) y prepara sus directorios `train`.
-  - Al terminar lista los benchmarks preparados y los que no compilaron. Los
-    que no compilan no paran a los demás.
-  - Sin `--build-only`, además genera los checkpoints en el host, pero el
-    e2e genera los suyos.
+  Después comprueba que `specs/config/gem5_noavx.cfg` sigue ahí (`git checkout specs/config`).
+- **Nunca se ha probado:** `docker/Dockerfile.spec` es nuevo y no se ha
+  construido. Si falla la construcción o falta un paquete, arréglalo en ese
+  Dockerfile y en la misma rama.
+- **Si el PC ya tiene una imagen `gem5_noavx_env` de antes,** el script la
+  reutiliza. Para usar la del repo: `docker rmi gem5_noavx_env:latest`.
+
+Comprobación rápida de un binario:
+
+```bash
+objdump -d specs/benchspec/CPU/505.mcf_r/run/run_base_train_test_compilacion-m64.0000/mcf_r_base.test_compilacion-m64 \
+  | grep -cE '%ymm|%zmm|vzeroupper|bextr|shlx|sarx|shrx'   # tiene que dar 0
+```
 
 ## 2. Lanzar
 
