@@ -8,6 +8,7 @@
  * The dump file layout is:
  *   [ckpt_header_t]
  *   [N x ckpt_region_t]   (region descriptors, N == header.num_regions)
+ *   [M x ckpt_fd_t]       (open file descriptors, M == header.num_fds)
  *   [raw bytes for each region, in order]
  */
 
@@ -21,7 +22,8 @@
 /*  Magic + version                                                      */
 /* ------------------------------------------------------------------ */
 #define CKPT_MAGIC   0x474D35434B505400ULL  /* "GM5CKPT\0" */
-#define CKPT_VERSION 1
+/* v2: added the FD block (num_fds) and the FPU state (fpregs) */
+#define CKPT_VERSION 2
 
 /* ------------------------------------------------------------------ */
 /*  x86-64 general-purpose + special registers                          */

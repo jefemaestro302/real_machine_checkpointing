@@ -45,6 +45,7 @@
 #include <ucontext.h>
 
 #include "checkpoint.h"
+#include "dumper.h"
 
 /* ------------------------------------------------------------------ */
 /*  Forward declarations from dumper.c                                  */
@@ -74,7 +75,7 @@ static void page_set_writable(void *addr, int writable)
     uintptr_t page = (uintptr_t)addr & ~(uintptr_t)(getpagesize() - 1);
     int prot = PROT_READ | PROT_EXEC | (writable ? PROT_WRITE : 0);
     if (mprotect((void *)page, getpagesize(), prot) != 0)
-        perror("[libckpt] mprotect");
+        ckpt_log("[libckpt] mprotect failed\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -123,15 +124,16 @@ static void do_dump_from_ucontext(ucontext_t *uc)
 #  error "libckpt only supports x86-64"
 #endif
 
-    fprintf(stderr, "[libckpt] Dumping checkpoint to: %s\n", g_output_path);
-    fprintf(stderr, "[libckpt] RIP=0x%lx  RSP=0x%lx\n", regs.rip, regs.rsp);
+    /* We are inside a signal handler: only async-signal-safe logging */
+    ckpt_log("[libckpt] Dumping checkpoint to: %s\n", g_output_path);
+    ckpt_log("[libckpt] RIP=0x%lx  RSP=0x%lx\n", regs.rip, regs.rsp);
 
     int rc = ckpt_dump_impl(g_output_path, &regs);
     if (rc != 0) {
-        fprintf(stderr, "[libckpt] ERROR: ckpt_dump_impl returned %d\n", rc);
+        ckpt_log("[libckpt] ERROR: ckpt_dump_impl returned %d\n", rc);
         _exit(1);
     } else {
-        fprintf(stderr, "[libckpt] Done! Resuming application.\n");
+        ckpt_log("[libckpt] Done! Resuming application.\n");
         return;
     }
 }
@@ -168,8 +170,8 @@ static void sigtrap_handler(int sig, siginfo_t *info, void *ctx)
 
     if ((void *)bp_addr != g_sym_addr) {
         /* Not our breakpoint -- let default handler take it */
-        fprintf(stderr, "[libckpt] SIGTRAP at unexpected addr 0x%lx, aborting\n",
-                (unsigned long)bp_addr);
+        ckpt_log("[libckpt] SIGTRAP at unexpected addr 0x%lx, aborting\n",
+                 (unsigned long)bp_addr);
         struct sigaction dfl = { .sa_handler = SIG_DFL };
         sigaction(SIGTRAP, &dfl, NULL);
         raise(SIGTRAP);
@@ -177,8 +179,8 @@ static void sigtrap_handler(int sig, siginfo_t *info, void *ctx)
     }
 
     int call_no = atomic_fetch_add(&g_sym_call_count, 1) + 1;
-    fprintf(stderr, "[libckpt] Symbol '%s' call #%d (target=%d)\n",
-            g_sym_name, call_no, g_sym_target_call);
+    ckpt_log("[libckpt] Symbol '%s' call #%d (target=%d)\n",
+             g_sym_name, call_no, g_sym_target_call);
 
     /* Always restore the original byte first so the function can run */
     page_set_writable(g_sym_addr, 1);
@@ -325,8 +327,9 @@ static void *elf_find_symbol(const char *exe_path, const char *name)
         }
         /* For the text segment in a PIE binary the slide is:
          * actual_text_base - text_vaddr
-         * But load_base is the actual_text_base from /proc/self/maps r-xp line. */
-        slide = load_base - text_vaddr;
+         * load_base comes from the /proc/self/maps r-xp line, which is page
+         * aligned, so p_vaddr has to be rounded down to its page too. */
+        slide = load_base - (text_vaddr & ~(uintptr_t)(getpagesize() - 1));
     }
 
     for (size_t i = 0; i < nsyms; i++) {
