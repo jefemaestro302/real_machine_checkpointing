@@ -1,40 +1,42 @@
 /*
- * test_signal_malloc.c - Checkpoint taken while the program lives in malloc.
+ * test_signal_malloc.c - Checkpoint taken while the program lives in malloc,
+ * and malloc still working after the restore.
  *
  * The program does nothing but malloc/free of sizes that bypass the tcache,
- * so the arena lock is held a large fraction of the time. libckpt's timer
- * thread makes the process multi-threaded, so glibc really takes that lock.
- * A dumper that calls malloc (fopen, stdio...) from the signal handler
- * deadlocks when the signal lands inside malloc: the run never finishes.
+ * so the arena lock is held a large fraction of the time (libckpt's timer
+ * thread makes the process multi-threaded, so glibc really takes it), and
+ * the heap keeps growing and being trimmed with brk().
+ *  - A dumper that calls malloc (fopen, stdio...) from the signal handler
+ *    deadlocks when the signal lands inside malloc: no checkpoint.
+ *  - A restore that leaves the process with the loader's program break
+ *    makes glibc corrupt its heap on the next trim ("double free or
+ *    corruption (out)") or fault on the next growth.
  *
- *   timeout 20 env LD_PRELOAD=build/libckpt.so CKPT_AFTER_NS=<random> \
- *       CKPT_OUTPUT=m.ckpt ./test_signal_malloc
+ *   launch_scripts/gen_ckpt.sh -t 200000000 -o m.ckpt -- ./test_signal_malloc
  *
- * Prints "MALLOC OK" and exits 0 after ~2 s of work; with the old dumper a
- * fraction of the runs hang (timeout exit code 124).
+ * Output: "MALLOC chunk N ok" per chunk, then "MALLOC OK".
  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <time.h>
 
 int main(void)
 {
     enum { SLOTS = 64 };
     void *slot[SLOTS] = {0};
     unsigned x = 12345;
-    struct timespec t0, t;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    for (;;) {
-        for (int i = 0; i < 100000; i++) {
+    char line[64];
+    for (int chunk = 0; chunk < 200; chunk++) {
+        for (int i = 0; i < 20000; i++) {
             x = x * 1103515245u + 12345u;
             int k = (x >> 8) % SLOTS;
             free(slot[k]);
             slot[k] = malloc(2048 + ((x >> 16) % 65536));
             if (slot[k]) memset(slot[k], 0, 16);
         }
-        clock_gettime(CLOCK_MONOTONIC, &t);
-        if (t.tv_sec - t0.tv_sec >= 2) break;
+        int n = snprintf(line, sizeof(line), "MALLOC chunk %d ok\n", chunk);
+        (void)!write(1, line, (size_t)n);
     }
     static const char ok[] = "MALLOC OK\n";
     (void)!write(1, ok, sizeof(ok) - 1);

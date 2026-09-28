@@ -64,3 +64,6 @@ src/loader_asm.c
 
 # Python
 __pycache__/
+
+# Ejecuciones de launch_scripts/e2e_altek.sh
+/e2e_runs/
