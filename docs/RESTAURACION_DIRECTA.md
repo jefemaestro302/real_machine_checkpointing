@@ -115,9 +115,12 @@ de la forma normal de gem5.
   genera con `GLIBC_TUNABLES` sin AVX.
 - `argv[0]`/`cmd` solo aparecen en los mensajes de gem5.
 - Las caches y la TLB empiezan frias en el primer ciclo del ROI. Con el
-  loader tambien empezaban practicamente frias (lo que las calentaba era el
-  `memcpy` del loader, no la aplicacion); `--warmup N` ejecuta N
-  instrucciones de la propia aplicacion en la CPU simple antes de medir.
+  loader no empezaban frias: heredaban lo que dejaba el `memcpy` del loader
+  (no lo que usa la aplicacion) y, sobre todo, las paginas de la aplicacion
+  quedaban en marcos fisicos alternos, asi que solo usaba la mitad de los
+  conjuntos de la L2 (ver [Diferencia conocida con el loader](#diferencia-conocida-con-el-loader-coloreado-de-paginas)).
+  `--warmup N` ejecuta N instrucciones de la propia aplicacion en la CPU
+  simple antes de medir.
 - `--seq-load` y la barrera del loader no aplican.
 
 ## Validacion
@@ -152,6 +155,53 @@ Tambien probados: `x86_mixed.py --restore auto` (elige directa) con `--pmu`
 (los CSV de la PMU salen desde el tick 0), `--warmup` con AtomicSimpleCPU y
 SMT-2, y `x86_mixed_2core.py` en ambos modos.
 
+### En altek (29-09-2026)
+
+Con `gap_gem5@8a09b7f` (`integration/rmc-direct`: restauracion directa +
+arreglos O3 de `fix-smt-wakeup` + cambios del manager que solo estaban en
+altek), compilado en el nodo de login con gcc 11.5.0, y la e2e completa
+(`e2e_altek.sh --spec all`, 7 pruebas de `test/` + 23 SPEC rate):
+
+| Modo | ID | Job | Resultado | Suma de tiempos de gem5 | Por SPEC |
+|---|---|---|---|---|---|
+| `--restore direct` | `20260929_134020` | 151470 | 30/30 | 1110 s | 13-23 s |
+| `--restore loader` | `20260929_134909` | 151500 | 30/30 | 5214 s | 27-697 s (`xz` 697, `bwaves` 589, `deepsjeng` 498, `cam4` 487) |
+
+En directo los 30 `gem5.log` tienen `regions restored`, `restored at the ROI`
+e `instalado(s) en initState`, y ninguno `[loader]`. Las instrucciones de ROI
+son las de la tabla anterior (21 menos en directo en `target_app`,
+`static_malloc` y `fd`). En `smt2` el hilo 1 llega a 200000 en ambos modos;
+el hilo 0 se corta cuando el hilo 1 llega a su tope, asi que su cuenta
+depende del intercalado (3051 en directo, 3282 con loader). En los SPEC la
+diferencia de tiempo es mayor que en los tests porque el loader copiaba
+cientos de MB (`xz`: checkpoint de 892 MB).
+
+`mcf` en O3, 10 M instrucciones de ROI (`run_mixed.sh`, `parse_roi_stats.py`):
+
+| | loader | directa | directa, `--warmup 5M` |
+|---|---|---|---|
+| `simInsts` | 10000001 | 10000003 | 10000003 |
+| IPC | 0,616 | 0,724 | 0,742 |
+| L1D MPKI | 49,4 | 48,9 | 46,0 |
+| Fallos de L2 (MPKI) | 197221 (19,7) | 152574 (15,3) | 139671 (14,0) |
+| Writebacks de L2 | 42430 | 26481 | 24862 |
+| Fallos de la DTB (rd / wr) | 74608 / 12052 | 74607 / 11823 | 69063 / 10531 |
+
+Loader y directa ejecutan la misma ventana (`numOps`, loads y stores iguales
+a +-12); la diferencia esta toda en la L2 y se explica en
+[Diferencia conocida con el loader](#diferencia-conocida-con-el-loader-coloreado-de-paginas).
+
+`x86_mixed_2core.py` (`mcf`+`leela` en el nucleo 0, `xz`+`nab` en el 1,
+2 M instrucciones por hilo):
+
+- directa: `4 checkpoints instalados en initState: 0 ciclos de carga` y los
+  4 hilos llegan a su tope (2000001-2000004) sin panic.
+- loader: la conmutacion a O3 no aborta (usa el arreglo de `BaseMMU` y el export de
+  `suspendContext`) y los 4 hilos llegan a su tope (2000000-2000003) sin
+  panic (job 151533). La carga cuesta 675 M instrucciones por hilo en el
+  nucleo 0 y 147 M en el 1 (el checkpoint de `xz` es de 892 MB) y unos 90
+  minutos de reloj, frente a los ~9 minutos totales de la restauracion directa.
+
 ### Arreglos de gem5 necesarios para conmutar de CPU
 
 Al validar el modo loader (y `--warmup`, que tambien conmuta) con un
@@ -164,8 +214,8 @@ restauracion directa, y que ahora estan arreglados en `gap_gem5`:
   siquiera estan conectados. `BaseMMU::takeOverFrom()` solo traspasa ahora
   los puertos conectados (el mismo codigo sigue en `develop` de upstream).
   Sin este arreglo, cualquier config que conmute CPUs x86 en SE aborta en un
-  `gem5.opt`; si en altek no pasa, ese gem5 no tiene asserts o tiene cambios
-  locales.
+  `gem5.opt`. El gem5 de altek (sincronizado con rsync, sin git) ya llevaba
+  este mismo cambio en local; ahora esta en `gap_gem5`.
 - `x86_mixed_2core.py` necesita `suspendContext`/`activateContext`
   exportados a Python en `BaseCPU.py`; su cabecera decia que el arbol estaba
   parcheado, pero el cambio no estaba en el repo. Anadido.
@@ -173,6 +223,46 @@ restauracion directa, y que ahora estan arreglados en `gap_gem5`:
 Ademas, `x86_mixed.py` y `x86_mixed_2core.py` fijaban siempre
 `mem_mode = "timing"`, y con `--load-cpu atomic` gem5 se negaba a arrancar;
 ahora el modo es el de la CPU que arranca.
+
+## Diferencia conocida con el loader: coloreado de paginas
+
+El loader mapea el `.ckpt` entero y copia cada region con `memcpy`. gem5 SE
+asigna los marcos fisicos en orden (bump allocator) al tocar cada pagina, y
+en la copia se alternan un fallo de pagina del origen (el `.ckpt`) y uno del
+destino (la aplicacion): la aplicacion queda en marcos alternos (stride 2).
+La L2 de las configs (256 KiB, 8 vias, lineas de 64 B, 512 conjuntos) indexa
+con los bits 6-14 de la direccion fisica; los bits 12-14 salen del numero de
+pagina, y con stride 2 el bit 12 queda fijo: **con el loader la aplicacion
+solo usa la mitad de la L2**. La L1D (32 KiB, 64 conjuntos) y la TLB indexan
+dentro de la pagina y no se ven afectadas. En directa cada tramo de paginas
+con datos se asigna seguido (stride 1) y se usan los 8 colores, como en
+Linux, que reparte los marcos por todos los colores.
+
+`test/test_page_colour.c` (recorre 192 KiB: mas que media L2, menos que la
+L2 entera; instrucciones en su cabecera), 3 M instrucciones en O3, en local:
+
+| | loader | directa |
+|---|---|---|
+| Stride fisico entre paginas consecutivas del buffer | 2 (47 de 47) | 1 |
+| Colores de L2 usados | 4 de 8 | 8 de 8 |
+| Fallos de L2 | 599875 de 599877 (100 %) | 3080 (0,5 %) |
+| IPC | 0,38 | 1,64 |
+
+En `mcf` (tabla de altek de arriba) es la misma firma: L1D y DTB iguales,
++29 % de fallos de L2 y un IPC un 15 % menor con el loader. La colocacion es
+fija durante todo el ROI, asi que un ROI mas largo no la diluye.
+
+Consecuencias:
+
+- La restauracion directa es la fiel. Para resultados nuevos, directa (con
+  `--warmup` si el ROI es corto).
+- Los resultados antiguos del TFM hechos con el loader estan sesgados en los
+  benchmarks sensibles a la L2 (`mcf`: IPC subestimado ~15 %). Para
+  compararse con ellos hay que usar `--restore loader`, que reproduce el
+  mismo sesgo.
+- El loader no se cambia: se arreglaria copiando con `pread` directamente al
+  destino en vez de `memcpy` desde el mapeo, pero romperia la
+  reproducibilidad de los resultados antiguos.
 
 ## Limitaciones
 

@@ -1,5 +1,13 @@
 # HANDOFF: validar la restauración directa en altek, unificar versiones y llevarlo a las ramas principales
 
+> **Estado: completado el 29-09-2026.** e2e 30/30 en ambos modos en altek
+> (jobs 151470 directa / 151500 loader) con `gap_gem5@8a09b7f`
+> (`integration/rmc-direct`); merge a `master` (RMC) y `main` (`gap_gem5`).
+> Resultados y la diferencia de IPC con el loader (coloreado de páginas):
+> [`docs/RESTAURACION_DIRECTA.md`](docs/RESTAURACION_DIRECTA.md#validacion).
+> Pendiente: §7 (instalación única en altek; la clave SSH de altek no tiene
+> acceso a `jefemaestro302/gap_gem5`).
+
 Para una instancia (persona o agente) que trabaja **en el PC del usuario**, con
 acceso ssh a altek. Afecta a dos repos:
 
