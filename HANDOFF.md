@@ -35,10 +35,11 @@ existe…), párate y pregunta al usuario en lugar de improvisar.
   sube, lanza un array SLURM (una tarea por prueba, 8 a la vez), espera y da
   el veredicto. Un benchmark que no se pueda generar no para los demás:
   aparece como `FAIL` con el motivo.
-- Validado fuera de altek: pruebas nativas (16/16) y el orquestador con
-  SLURM y gem5 simulados. **Nunca se ha ejecutado contra altek ni contra gem5
-  real.** Esta es la primera vez: cualquier fallo es información nueva, no un
-  problema conocido.
+- **Validado en altek el 29-09-2026:** `e2e_altek.sh --spec all`, job 151440,
+  **30/30**: las 7 pruebas de `test/` y las 23 SPEC rate, compiladas con
+  `docker/Dockerfile.spec` (gcc 11.4), con 10 M instrucciones de ROI cada una.
+  En unos 30 min; la más lenta, xz (unos 15 min). Un fallo nuevo indica una
+  regresión o un cambio del entorno (gem5, SPEC, toolchain).
 - Formato de checkpoint v2: los `.ckpt` antiguos (v1) se rechazan. El e2e
   genera los suyos.
 
@@ -122,11 +123,8 @@ ls specs/shrc specs/config/gem5_noavx.cfg     # SPEC instalado
   ```
 
   Después comprueba que `specs/config/gem5_noavx.cfg` sigue ahí (`git checkout specs/config`).
-- **Nunca se ha probado:** `docker/Dockerfile.spec` es nuevo y no se ha
-  construido. Si falla la construcción o falta un paquete, arréglalo en ese
-  Dockerfile y en la misma rama.
-- **Si el PC ya tiene una imagen `gem5_noavx_env` de antes,** el script la
-  reutiliza. Para usar la del repo: `docker rmi gem5_noavx_env:latest`.
+- **Si el PC tiene una imagen `gem5_noavx_env` de otra procedencia,** el
+  script la reutiliza. Para usar la del repo: `docker rmi gem5_noavx_env:latest`.
 
 Comprobación rápida de un binario:
 

@@ -6,7 +6,9 @@
 # Un checkpoint  -> single-thread.
 # N checkpoints  -> SMT-N multiprogramado sobre un mismo nucleo O3.
 #
-# Variables de entorno: GEM5_BIN, LOADER, CKPT_DIR, OUT_BASE.
+# Variables de entorno: GEM5_BIN, LOADER, CKPT_DIR, OUT_BASE, LOADER_OPTS.
+# Remapeos de rutas: los <ckpt>.remap que deja regenerate_ckpt_noavx.sh
+# --upload junto a cada checkpoint (mas LOADER_OPTS="OLD=NEW ...").
 #
 # gem5 se ejecuta CON EL CWD EN EL OUTDIR: la instrumentacion PMU del GAP
 # escribe los CPU_*_THD_*.csv con rutas relativas, asi que de otro modo
@@ -29,6 +31,8 @@ for c in "$@"; do
     CKPTS="$CKPTS $(realpath "$c")"
 done
 CKPTS="${CKPTS# }"
+# shellcheck disable=SC2086
+REMAPS="$(ckpt_remaps $CKPTS)"
 
 OUTDIR="$OUT_BASE/$TAG"
 mkdir -p "$OUTDIR"
@@ -39,6 +43,7 @@ echo " tag        : $TAG"
 echo " checkpoints: $CKPTS"
 echo " carga      : $LOADCPU     ROI: DerivO3CPU + caches L1/L2  $PMU"
 echo " maxinsts   : $MAXINSTS (por hilo)"
+echo " remapeos   : ${REMAPS:-(ninguno)}"
 echo " outdir     : $OUTDIR"
 echo "=================================================="
 
@@ -48,7 +53,7 @@ cd "$OUTDIR"
     --loader-pie="$(realpath "$LOADER_PIE")" \
     --ckpts $CKPTS \
     --load-cpu="$LOADCPU" \
-    --maxinsts="$MAXINSTS" $PMU
+    --maxinsts="$MAXINSTS" --loader-opts="$REMAPS" $PMU
 RC=$?
 
 echo ""

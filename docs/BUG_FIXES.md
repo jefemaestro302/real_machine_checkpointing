@@ -160,10 +160,13 @@ benchmarks SPEC se definen una sola vez en `launch_scripts/benchmarks.sh`.
 | 19 | Enlazado perezoso: la primera llamada a una funcion de biblioteca dentro del ROI ejecutaba el resolvedor de ld.so, que salva registros con `xsave`/`xsavec` segun la CPU | `LD_BIND_NOW=1`: todo se resuelve al arrancar |
 | 20 | Cada script comprobaba (o no) el AVX del binario y esperaba el volcado a su manera | comprobacion unica, espera al fichero completo, validacion con `ckpt_inspect.py` y `.meta` con las condiciones de generacion |
 
-Los scripts de Tailbench (`generate_all_checkpoints_noavx.sh`,
-`run_noavx_glibc_checkpoint.sh`) generan con una glibc propia y un `ld.so`
-explicito dentro de Docker; se mantienen marcados como LEGADO y avisan al
-ejecutarse.
+Los scripts de Tailbench (generaban con una glibc propia y un `ld.so` explicito
+dentro de Docker) y los caminos duplicados (`build_spec_docker.sh`,
+`run_spec_dump.sh`, `run_gem5.sh`, `sync_benchmark_to_altek.sh`) se han
+eliminado. Queda un camino por tarea: compilar SPEC con
+`generate_all_spec_checkpoints.sh --build-only` (Docker), generar y subir con
+`regenerate_ckpt_noavx.sh --upload`, simular con `run_mixed.sh` /
+`run_st_timing.sh` y validar con `e2e_altek.sh`.
 
 ## Scripts
 
@@ -174,11 +177,11 @@ ejecutarse.
 | `launch_scripts/run_10M_suite.sh` | `dump_perlbench_noavx_build.ckpt` no lo genera nadie | `dump_perlbench_noavx.ckpt` y comprobacion |
 | `launch_scripts/regenerate_ckpt_noavx.sh` | ver bug 6; sin `setarch -R`; `kill` al subshell y no al benchmark | espera correcta, `setarch -R env ...`, `exec` |
 | `test/run_test.sh` | remapeo sin `=`; `rm` de un fichero inexistente con `set -e`; modificaba `test/new_dir/input1.txt` versionado | reescrito en un directorio temporal |
-| `run_example.sh`, `run_noavx_glibc_checkpoint.sh` | loader nativo -> SIGILL; compilacion a mano sin `dumper_asm.S` | `--native`, `make` |
-| `run_gem5.sh` | `se.py` termina en el `m5_exit` sin simular el ROI; `O3CPU` no es valido | atajo a `launch_scripts/` |
+| `run_example.sh` | loader nativo -> SIGILL; compilacion a mano sin `dumper_asm.S` | `--native`, `make` |
+| `run_gem5.sh` | `se.py` termina en el `m5_exit` sin simular el ROI; `O3CPU` no es valido | eliminado: `launch_scripts/run_st_timing.sh` / `run_mixed.sh` |
 | `test_fd_slurm.sh`, `test_perlbench_slurm.sh` | ruta `real_machine_checkpoint` (sin "-ing"), `x86_st.py` que no esta en el repo | eliminados: los cubre `e2e_altek.sh` (pruebas `fd` y `--spec perlbench`) |
-| `sync_benchmark_to_altek.sh` | misma ruta sin "-ing"; subia la plantilla SLURM eliminada | ruta del repo, sube ambos loaders |
-| `run_spec_dump.sh`, `generate_all_spec_checkpoints.sh` | generaban en Docker con otra glibc y sin desactivar ASLR | Docker solo compila; generan con `regenerate_ckpt_noavx.sh` / `gen_ckpt.sh` |
+| `sync_benchmark_to_altek.sh` | ruta sin "-ing"; lista fija de 12 SPEC; los checkpoints llevaban las rutas del PC y `run_mixed.sh` no pasaba remapeos: un ROI que abriera ficheros no los encontraba en altek | eliminado: `regenerate_ckpt_noavx.sh --upload` sube checkpoint, entradas y `<ckpt>.remap`, que `run_mixed.sh` y `run_st_timing.sh` aplican |
+| `run_spec_dump.sh`, `generate_all_spec_checkpoints.sh` | generaban en Docker con otra glibc y sin desactivar ASLR | Docker solo compila; se genera con `regenerate_ckpt_noavx.sh` / `gen_ckpt.sh`; `run_spec_dump.sh` eliminado |
 
 ## Notas de uso que salen de los arreglos
 
@@ -188,7 +191,7 @@ ejecutarse.
   Con ASLR, el heap de un binario estatico no PIE puede caer encima del loader
   (`0x20000000`); el loader lo detecta y aborta. En Docker `setarch -R` no
   funciona: `gen_ckpt.sh` se niega salvo con `RMC_ALLOW_ASLR=1`.
-- Apps lanzadas con un `ld.so` explicito (scripts de Tailbench): con ASLR su heap
+- Apps lanzadas con un `ld.so` explicito: con ASLR su heap
   cae en la zona PIE (usar `loader_pie`); sin ASLR queda junto a ld.so, lejos de
   ambos loaders, y el loader avisa de que no mueve el break.
 - Si la salida estandar del programa va a una tuberia o fichero, lo que hubiera en

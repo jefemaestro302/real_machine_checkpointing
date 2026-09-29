@@ -23,6 +23,17 @@ RMC_NOAVX_TUNABLES="glibc.cpu.hwcaps=-SSE4_2,-SSE4_1,-SSSE3,-AVX,-AVX2,-AVX512F,
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# Remapeos de rutas para el loader (OLD=NEW separados por espacios):
+# LOADER_OPTS mas el <ckpt>.remap que deja junto a cada checkpoint
+# regenerate_ckpt_noavx.sh --upload (un OLD=NEW por linea: rutas del PC donde
+# se genero -> rutas de altek). Sin repetidos.
+ckpt_remaps() {   # ckpt_remaps <ckpt>...
+    {
+        for w in ${LOADER_OPTS:-}; do echo "$w"; done
+        for c in "$@"; do [ -f "$c.remap" ] && cat "$c.remap"; done
+    } | awk 'NF && !seen[$0]++' | paste -sd' ' -
+}
+
 check_built() {
     [ -x "$LOADER" ]     || die "no existe $LOADER  (ejecuta: make -C $REPO)"
     [ -x "$LOADER_PIE" ] || die "no existe $LOADER_PIE  (ejecuta: make -C $REPO)"

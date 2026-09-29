@@ -47,7 +47,6 @@ la memoria restaurada y la aplicacion ejecuta basura.
 | `test/` | Pruebas nativas del flujo (`run_native_tests.sh`) |
 | `docs/` | Bugs corregidos (`BUG_FIXES.md`) y como verificarlos en gem5 (`VERIFICACION_GEM5.md`) |
 | `docker/Dockerfile.spec` | Imagen `gem5_noavx_env`: compiladores para SPEC sin AVX (`generate_all_spec_checkpoints.sh`) |
-| `docker/Dockerfile.noavx_glibc` | glibc compilada con `--disable-multi-arch` (sin AVX; Tailbench, heredado) |
 | `specs/config/gem5_noavx.cfg` | Config de SPEC CPU2017 que compila sin AVX |
 
 ## Uso
@@ -96,7 +95,16 @@ reanuda desde el checkpoint restaurado.
 SPEC: se compila solo en Docker (`generate_all_spec_checkpoints.sh
 --build-only [all|bench...]`). Cualquier benchmark rate preparado sirve sin
 tocar nada: `launch_scripts/benchmarks.sh` lee su comando del `speccmds.cmd` de
-runcpu. Se generan con `launch_scripts/regenerate_ckpt_noavx.sh [mcf|lbm|...|all]`.
+runcpu. Se generan en el PC y se suben a altek en un paso:
+
+```bash
+launch_scripts/regenerate_ckpt_noavx.sh --upload mcf lbm   # o "all"
+```
+
+Deja en altek `~/checkpoints/dump_<b>.ckpt`, el directorio de ejecucion del
+benchmark en `~/spec_cpu_2017/...` y un `dump_<b>.ckpt.remap` con la
+traduccion de rutas PC -> altek, que `run_mixed.sh` y `run_st_timing.sh`
+aplican solos.
 
 ### 3. Probar la restauracion en la maquina real
 
@@ -129,8 +137,9 @@ launch_scripts/parse_roi_stats.py ~/TFM/m5out/mi_tag
 Las configs eligen solas `build/loader` o `build/loader_pie` segun donde este
 el `[heap]` del checkpoint: el loader mueve el *program break* del proceso al
 final del heap restaurado, y en gem5 el coste es lineal en la distancia (ver
-`docs/BUG_FIXES.md`, bug 4). Remapeos de rutas: `LOADER_OPTS="OLD=NEW"` en
-`run_st_timing.sh`, `--loader-opts` en `x86_mixed.py`.
+`docs/BUG_FIXES.md`, bug 4). Remapeos de rutas: el `<ckpt>.remap` de cada
+checkpoint, mas `LOADER_OPTS="OLD=NEW ..."` si hace falta (en las configs,
+`--loader-opts`).
 
 `x86_mixed.py` ejecuta el loader en una CPU simple (es puro `memcpy`, no aporta
 nada microarquitectonico y en O3 cuesta horas), y en el `m5_exit` que el loader
@@ -167,19 +176,18 @@ gem5 SE no implementa AVX, AVX2 ni BMI2. Hay que eliminarlas por dos vias:
    objdump -d $BIN | grep -cE '%ymm|bextr|shlx|sarx|shrx|vmovdq'   # tiene que dar 0
    ```
 2. **La glibc.** Su resolvedor IFUNC elige rutas AVX2 para `memcpy`, `strlen`,
-   `memchr`... al arrancar el proceso. Dos opciones:
-   - Generar el checkpoint dentro de `docker/Dockerfile.noavx_glibc`
-     (glibc con `--disable-multi-arch`), o
-   - exportar `GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX,-AVX2,-AVX512F,-SSE4_1,-SSE4_2,-SSSE3,...`
-     al generar, que fuerza las rutas SSE2.
+   `memchr`... al arrancar el proceso. `gen_ckpt.sh` exporta
+   `GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX,-AVX2,-AVX512F,-SSE4_1,-SSE4_2,-SSSE3,...`
+   al generar, que fuerza las rutas SSE2.
 
 Si falta cualquiera de las dos, gem5 aborta con
 `panic: Unrecognized/invalid instruction executed`.
 
 ## Notas
 
-- **Compilacion de benchmarks:** se compilan siempre en local con el contenedor
-  Docker y luego se suben al cluster, nunca se compilan en el cluster.
+- **Docker solo compila SPEC** (`generate_all_spec_checkpoints.sh`, imagen de
+  `docker/Dockerfile.spec`), siempre en local; nunca se compila en el cluster.
+  Generar checkpoints, el e2e y la simulacion no usan Docker.
 - **Instrumentacion PMU** (`--pmu`): los contadores del gem5 del GAP escriben
   `CPU_*_THD_*_{DISPATCH_STALLS,ISSUE_STALLS,FU_DISTRIBUTION}.csv` con una fila
   por ciclo, en el directorio de trabajo de gem5. Son ~90 MB por millon de
