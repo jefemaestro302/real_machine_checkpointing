@@ -23,19 +23,36 @@ Requiere suspendContext/activateContext expuestos a Python en BaseCPU.py
 (cxx_exports) -- no vienen expuestos de fabrica en gem5; parcheado en este
 arbol.
 
+Como en x86_mixed.py: el loader de cada checkpoint se elige solo
+(build/loader o build/loader_pie, ver rmc_common.py), cada proceso arranca en
+el cwd de su checkpoint (con los remapeos de --loader-opts) y, en la carga
+concurrente, los loaders de todos los hilos se sincronizan con una barrera
+antes de su m5_exit para que ningun ROI empiece en la CPU simple mientras
+otros restauran. Con --seq-load no hay barrera (los hilos suspendidos nunca
+llegarian a ella).
+
 Uso:
   gem5.opt --outdir=DIR x86_mixed_2core.py --loader LOADER \
       --ckpts0 A.ckpt B.ckpt --ckpts1 C.ckpt D.ckpt \
-      [--load-cpu timing|atomic] [--maxinsts 10000000] [--pmu]
+      [--load-cpu timing|atomic] [--maxinsts 10000000] [--pmu] \
+      [--loader-opts "OLD=NEW ..."]
 """
 import argparse
 import os
 import re
+import sys
 import m5
 from m5.objects import *
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rmc_common import pick_loader, process_cwd
+
 parser = argparse.ArgumentParser(description="RMC: 2 nucleos SMT-2, carga simple + ROI en DerivO3CPU")
-parser.add_argument("--loader",   type=str, required=True, help="Binario loader")
+parser.add_argument("--loader",   type=str, required=True, help="Binario loader (no PIE)")
+parser.add_argument("--loader-pie", type=str, default=None,
+                    help="Loader para checkpoints PIE (por defecto <loader>_pie si existe)")
+parser.add_argument("--loader-opts", type=str, default="",
+                    help="Argumentos extra para todos los loaders (remapeos OLD=NEW)")
 parser.add_argument("--ckpts0",   type=str, nargs="+", required=True, help="Checkpoints del nucleo 0")
 parser.add_argument("--ckpts1",   type=str, nargs="+", required=True, help="Checkpoints del nucleo 1")
 parser.add_argument("--maxinsts", type=int, default=10_000_000,
@@ -60,6 +77,17 @@ parser.add_argument("--pmu", action="store_true",
 args = parser.parse_args()
 
 NT0, NT1 = len(args.ckpts0), len(args.ckpts1)
+
+# Loader, cwd y argumentos de cada checkpoint (rutas absolutas: cada proceso
+# arranca en el cwd de su checkpoint)
+REMAPS = args.loader_opts.split()
+LOADER_EXTRA = list(REMAPS)
+if not args.seq_load and NT0 + NT1 > 1:
+    barrier = os.path.join(os.path.abspath(m5.options.outdir), "rmc_barrier")
+    open(barrier, "w").close()          # vacio: cada loader anade un byte
+    LOADER_EXTRA.append(f"--barrier={barrier}:{NT0 + NT1}")
+args.ckpts0 = [os.path.abspath(ck) for ck in args.ckpts0]
+args.ckpts1 = [os.path.abspath(ck) for ck in args.ckpts1]
 
 system = System()
 # Siempre True: es lo que usa el x86_mixed.py validado. Con 2 CPUs y 1 hilo
@@ -132,9 +160,14 @@ def build_core(idx, nt, ckpts):
     env_dict = dict(os.environ)
     env_dict["GLIBC_TUNABLES"] = NOAVX_TUNABLES
     env_list = [f"{k}={v}" for k, v in env_dict.items()]
-    procs = [Process(pid=100 + idx * 10 + i, executable=args.loader,
-                     cmd=[args.loader, ck], env=env_list)
-             for i, ck in enumerate(ckpts)]
+    procs = []
+    for i, ck in enumerate(ckpts):
+        ld  = pick_loader(ck, args.loader, args.loader_pie)
+        cwd = process_cwd(ck, REMAPS)
+        print(f"  nucleo{idx} hilo{i}: {os.path.basename(ck)} -> {os.path.basename(ld)}  cwd={cwd}",
+              flush=True)
+        procs.append(Process(pid=100 + idx * 10 + i, executable=ld,
+                             cmd=[ld, ck] + LOADER_EXTRA, env=env_list, cwd=cwd))
 
     cpu_simple.workload = procs
 
@@ -170,7 +203,8 @@ def build_o3(idx, nt):
 system.o3_0 = build_o3(0, NT0)
 system.o3_1 = build_o3(1, NT1)
 
-system.workload = SEWorkload.init_compatible(args.loader)
+system.workload = SEWorkload.init_compatible(
+    pick_loader(args.ckpts0[0], args.loader, args.loader_pie))
 
 # Y dentro de cada par, el orden de x86_mixed.py (1 nucleo), ya validado:
 # createThreads() de la CPU simple primero -- es quien crea los objetos ISA por
