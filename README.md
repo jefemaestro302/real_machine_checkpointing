@@ -39,9 +39,9 @@ la memoria restaurada y la aplicacion ejecuta basura.
 | `src/dumper.c`, `src/dumper_asm.S` | Serializa registros, VMAs y FDs al `.ckpt` |
 | `src/loader.c` | Restaurador estatico que corre dentro de gem5 (`build/loader` para objetivos no PIE, `build/loader_pie` para PIE) |
 | `src/checkpoint.h` | Formato del fichero, compartido por ambos lados |
-| `gem5_configs/x86_mixed.py` | Carga en CPU simple + ROI en DerivO3CPU con caches (ST y SMT-N) |
+| `gem5_configs/x86_mixed.py` | ROI en DerivO3CPU con caches (ST y SMT-N): restauracion directa, o carga en CPU simple + conmutacion |
 | `gem5_configs/x86_st_timing.py` | Todo en una CPU simple: bucle rapido de depuracion |
-| `gem5_configs/rmc_common.py` | Eleccion automatica de loader segun el checkpoint |
+| `gem5_configs/rmc_common.py` | Modo de restauracion (directa/loader) y eleccion automatica de loader |
 | `launch_scripts/` | Lanzadores: generacion unica (`gen_ckpt.sh`, `benchmarks.sh`), simulacion, prueba e2e en altek (`e2e_altek.sh`), analisis de stats |
 | `tools/ckpt_inspect.py` | Diseccion de un `.ckpt`: cabecera, registros, regiones, FDs, bytes en RIP, loader recomendado |
 | `test/` | Pruebas nativas del flujo (`run_native_tests.sh`) |
@@ -120,6 +120,14 @@ N loaders en SMT (lo pone `x86_mixed.py`).
 
 ### 4. Simular
 
+Con el gem5 del GAP (`gap_gem5`, parametro `Process.rmcCheckpoint`) la
+restauracion es **directa**: gem5 instala el checkpoint en
+`Process.initState()` y el primer ciclo simulado ya es el ROI, sin simular el
+loader (ver [`docs/RESTAURACION_DIRECTA.md`](docs/RESTAURACION_DIRECTA.md)).
+Las configs lo eligen solas (`--restore auto`, o `RMC_RESTORE=` en los
+lanzadores); con un gem5 sin el parche, o con `--restore loader`, se simula el
+loader como se describe mas abajo.
+
 ```bash
 # Depuracion rapida: todo en TimingSimpleCPU
 launch_scripts/run_st_timing.sh dump.ckpt 1000000 timing
@@ -130,11 +138,15 @@ launch_scripts/run_mixed.sh mi_tag 10000000 timing --pmu dump.ckpt
 # SMT-2 multiprogramado sobre un mismo nucleo
 launch_scripts/run_mixed.sh smt2 10000000 timing --pmu a.ckpt b.ckpt
 
+# Forzar un modo; en directo, calentar caches N instrucciones antes del ROI
+RMC_RESTORE=loader launch_scripts/run_mixed.sh mi_tag 10000000 timing dump.ckpt
+RMC_RESTORE=direct RMC_WARMUP=5000000 launch_scripts/run_mixed.sh mi_tag 10000000 atomic dump.ckpt
+
 # Tabla de IPC y MPKI
 launch_scripts/parse_roi_stats.py ~/TFM/m5out/mi_tag
 ```
 
-Las configs eligen solas `build/loader` o `build/loader_pie` segun donde este
+Con loader, las configs eligen solas `build/loader` o `build/loader_pie` segun donde este
 el `[heap]` del checkpoint: el loader mueve el *program break* del proceso al
 final del heap restaurado, y en gem5 el coste es lineal en la distancia (ver
 `docs/BUG_FIXES.md`, bug 4). Remapeos de rutas: el `<ckpt>.remap` de cada

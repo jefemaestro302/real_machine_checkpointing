@@ -109,7 +109,8 @@ system = System()
 # frente al caso que funciona.
 system.multi_thread = True
 system.clk_domain   = SrcClockDomain(clock=args.clock, voltage_domain=VoltageDomain())
-system.mem_mode     = "timing"
+# Modo de memoria de las CPUs que arrancan (switchCpus pasa a timing para O3)
+system.mem_mode     = "atomic" if not O3_ACTIVE and args.load_cpu == "atomic" else "timing"
 system.mem_ranges   = [AddrRange(args.mem)]
 system.membus       = SystemXBar()
 system.mem_ctrl            = MemCtrl()

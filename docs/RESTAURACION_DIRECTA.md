@@ -120,6 +120,60 @@ de la forma normal de gem5.
   instrucciones de la propia aplicacion en la CPU simple antes de medir.
 - `--seq-load` y la barrera del loader no aplican.
 
+## Validacion
+
+En este contenedor (4 nucleos), con el `gem5.opt` del GAP compilado con el
+parche y la e2e real (`e2e_altek.sh` con `RMC_REMOTE=local` y un SLURM
+simulado), los mismos checkpoints en ambos modos:
+
+| Prueba | loader | directa | Instrucciones de ROI (loader / directa) |
+|---|---|---|---|
+| `target_app` (checksum = nativo) | PASS, 7 s | PASS, 0 s | 14060 / 14039 |
+| `static_malloc` (brk crece y se recorta) | PASS | PASS | 562500 / 562479 |
+| `fd` (remapeo de ruta) | PASS | PASS | 3799 / 3778 |
+| `redzone` | PASS | PASS | 150 M / 150 M |
+| `signal_malloc` | PASS | PASS | 150 M / 150 M |
+| `vdso` | PASS | PASS | 150 M / 150 M |
+| `smt2` (SMT-2, O3) | PASS | PASS | igual reparto por hilo |
+
+Las 21 instrucciones de diferencia son las del trampolin del loader que se
+ejecutan tras su `m5_exit` (`popfq`, los `mov` y el `jmp`) y se contaban como
+ROI: la restauracion directa mide solo la aplicacion.
+
+Coste antes del ROI:
+
+| Caso | loader | directa |
+|---|---|---|
+| `target_app`, AtomicSimpleCPU | 3,6 M instrucciones; gem5 7,3 s en total | 0 instrucciones; gem5 0,8 s en total |
+| `smt2` (static + signal_malloc), TimingSimpleCPU | 4,2 M instrucciones por hilo, 45 ms simulados | 0 |
+| `x86_mixed_2core.py`, 4 checkpoints | 3,1 M / 9,4 M instrucciones por hilo, 45 ms simulados | 0 |
+
+Tambien probados: `x86_mixed.py --restore auto` (elige directa) con `--pmu`
+(los CSV de la PMU salen desde el tick 0), `--warmup` con AtomicSimpleCPU y
+SMT-2, y `x86_mixed_2core.py` en ambos modos.
+
+### Arreglos de gem5 necesarios para conmutar de CPU
+
+Al validar el modo loader (y `--warmup`, que tambien conmuta) con un
+`gem5.opt` compilado desde `gap_gem5` salieron dos problemas que no son de la
+restauracion directa, y que ahora estan arreglados en `gap_gem5`:
+
+- `m5.switchCpus()` abortaba con `Port::takeOverFrom: old->isConnected()`:
+  `BaseCPU::takeOverFrom()` traspasa la MMU una vez por hilo, pero los hilos
+  SMT comparten una sola MMU, y en SE los puertos de los walkers x86 ni
+  siquiera estan conectados. `BaseMMU::takeOverFrom()` solo traspasa ahora
+  los puertos conectados (el mismo codigo sigue en `develop` de upstream).
+  Sin este arreglo, cualquier config que conmute CPUs x86 en SE aborta en un
+  `gem5.opt`; si en altek no pasa, ese gem5 no tiene asserts o tiene cambios
+  locales.
+- `x86_mixed_2core.py` necesita `suspendContext`/`activateContext`
+  exportados a Python en `BaseCPU.py`; su cabecera decia que el arbol estaba
+  parcheado, pero el cambio no estaba en el repo. Anadido.
+
+Ademas, `x86_mixed.py` y `x86_mixed_2core.py` fijaban siempre
+`mem_mode = "timing"`, y con `--load-cpu atomic` gem5 se negaba a arrancar;
+ahora el modo es el de la CPU que arranca.
+
 ## Limitaciones
 
 - Solo x86-64 (como todo RMC) y checkpoints de un hilo por proceso.

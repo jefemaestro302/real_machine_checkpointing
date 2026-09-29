@@ -87,7 +87,9 @@ SWITCH = RESTORE == "loader" or args.warmup > 0
 system = System()
 system.multi_thread = NT > 1
 system.clk_domain   = SrcClockDomain(clock=args.clock, voltage_domain=VoltageDomain())
-system.mem_mode     = "timing"          # ambas CPUs usan modo timing
+# El modo de memoria es el de la CPU que arranca: atomic solo si la carga (o
+# el calentamiento) va en AtomicSimpleCPU; switchCpus() pasa a timing para O3.
+system.mem_mode     = "atomic" if SWITCH and args.load_cpu == "atomic" else "timing"
 system.mem_ranges   = [AddrRange(args.mem)]
 
 if SWITCH:

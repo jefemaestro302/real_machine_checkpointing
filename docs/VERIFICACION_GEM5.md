@@ -45,9 +45,13 @@ defecto `~/gap_gem5/gem5/build/X86/gem5.opt`), `SPEC_REMOTE_DIR`
 ### Que comprueba cada prueba
 
 Cada prueba restaura su checkpoint en gem5 y pasa si gem5 termina bien, el
-loader llega al `m5_exit` (en todos los procesos), no aparece ningun error
+loader llega al `m5_exit` (en todos los procesos; con `--restore direct`, gem5
+instala los checkpoints en `initState`), no aparece ningun error
 (`panic`/`fatal` de gem5, `FATAL` del loader, corrupcion de malloc, violacion
-de segmento) y la salida esperada aparece:
+de segmento) y la salida esperada aparece. `--restore auto|direct|loader`
+elige el modo (ver [`RESTAURACION_DIRECTA.md`](RESTAURACION_DIRECTA.md)); en
+directo no hay loader, asi que las pruebas comprueban que el mismo estado
+restaurado por gem5 da la misma salida:
 
 | Prueba | Checkpoint | Pasa si | Bugs que cubre |
 |---|---|---|---|
@@ -57,7 +61,7 @@ de segmento) y la salida esperada aparece:
 | `redzone` | PIE, volcado por senal en una funcion hoja | >= 2 `REDZONE round N ok` y ningun `REDZONE CORRUPT` | 1 |
 | `signal_malloc` | PIE, volcado por senal dentro de malloc | >= 2 `MALLOC chunk N ok` sin abortos de glibc | 2, 4 (ampliacion del break, `loader_pie`) |
 | `vdso` | PIE | >= 2 `CLOCK round N ok` y ningun `CLOCK STUCK` | 11 |
-| `smt2` | `static_malloc` + `signal_malloc` en SMT-2 (O3) | `SMT barrier passed` en los dos procesos, cada uno con su loader | 4, 10 |
+| `smt2` | `static_malloc` + `signal_malloc` en SMT-2 (O3) | loader: `SMT barrier passed` en los dos procesos, cada uno con su loader; directa: los dos procesos instalados (`-> directa`) y el ROI en O3 sin errores | 4, 10 |
 | `spec_<b>` | cada benchmark rate preparado (`--spec all`), comando de su `speccmds.cmd` | llega a `--spec-insts` instrucciones de ROI | todo el flujo, cwd y remapeo de SPEC |
 
 Las pruebas que no terminan solas (`redzone`, `signal_malloc`, `vdso`) se

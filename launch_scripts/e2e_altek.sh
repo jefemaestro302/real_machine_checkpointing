@@ -23,7 +23,7 @@
 #   redzone        volcado por senal en una funcion hoja (red zone)
 #   signal_malloc  PIE, volcado por senal dentro de malloc; malloc tras restaurar
 #   vdso           el reloj avanza tras restaurar (vDSO -> syscalls)
-#   smt2           dos checkpoints (no PIE + PIE) en SMT-2 con O3 y barrera
+#   smt2           dos checkpoints (no PIE + PIE) en SMT-2 con O3 (y barrera con loader)
 #   spec_<nombre>  (--spec) el benchmark llega a --spec-insts de ROI
 #
 # Opciones:
@@ -274,7 +274,8 @@ if [ "$RUN_TESTS" = 1 ]; then
     add_test redzone       st  ckpt/test_redzone.ckpt       150000000  "REDZONE round [0-9]+ ok"        2 "REDZONE CORRUPT"  3600
     add_test signal_malloc st  ckpt/test_signal_malloc.ckpt 150000000  "MALLOC chunk [0-9]+ ok"         2 ""                 3600
     add_test vdso          st  ckpt/test_vdso.ckpt          150000000  "CLOCK round [0-9]+ ok"          2 "CLOCK STUCK"      3600
-    add_test smt2          smt ckpt/test_static_malloc.ckpt,ckpt/test_signal_malloc.ckpt 200000 "SMT barrier passed" 2 "" 3600
+    # Barrera en cada loader, o en restauracion directa cada proceso instalado sin loader
+    add_test smt2          smt ckpt/test_static_malloc.ckpt,ckpt/test_signal_malloc.ckpt 200000 "SMT barrier passed|-> directa " 2 "" 3600
 fi
 REMAPS+=("$WORK=$REMOTE_RUN/work")
 
