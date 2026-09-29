@@ -113,6 +113,16 @@ Leyenda de la columna "Evidencia":
 | 10 | SMT-N: el primer loader ejecutaba su ROI en la CPU simple mientras los demas restauraban | barrera `--barrier=FICHERO:N` |
 | 11 | vDSO copiado del host: reloj congelado o sin sentido tras restaurar en gem5 | entradas del vDSO -> syscalls |
 | 12 | `Makefile`: un `CFLAGS`/`LDFLAGS` del entorno eliminaba `-mno-avx`/`-static` | `override` |
+| 21 | Al terminar el programa dentro de gem5, `fatal: writeBlob(0x200bc650...) failed` (visto en altek con `target_app`, `static_malloc`, `fd`) | `set_tid_address(NULL)` antes de saltar al ROI |
+
+- **21**: la glibc del loader hace `set_tid_address(&tcb->tid)` al arrancar,
+  y su TCB esta en el break del loader (justo tras `_end`). Tras restaurar,
+  esa pagina ya no existe (el trampolin recorta el break al heap del
+  objetivo) o pertenece a otra cosa. Al salir, gem5 escribe 0 en
+  `clear_child_tid` y aborta si la pagina no esta mapeada (Linux lo ignoraria
+  en silencio). Tras restaurar el proceso tiene un solo hilo y nadie espera
+  en ese futex: el loader lo anula. Afecta a cualquier benchmark que termine
+  dentro de la simulacion.
 
 - **9**: stdin se restaura si es un fichero regular en lectura (p.ej.
   `503.bwaves_r < entrada`); stdout/stderr siguen siendo los de gem5; `O_RDWR`
