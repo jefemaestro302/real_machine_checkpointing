@@ -31,9 +31,15 @@ antes de su m5_exit para que ningun ROI empiece en la CPU simple mientras
 otros restauran. Con --seq-load no hay barrera (los hilos suspendidos nunca
 llegarian a ella).
 
+Con --restore direct (por defecto si el gem5 la soporta) no hay fase de
+carga: gem5 instala los 4 checkpoints en Process.initState() y las O3 son las
+CPUs activas desde el tick 0, con los 4 ROI empezando a la vez. Sin loaders
+no hay barrera ni restauraciones concurrentes (--seq-load no aplica).
+
 Uso:
   gem5.opt --outdir=DIR x86_mixed_2core.py --loader LOADER \
       --ckpts0 A.ckpt B.ckpt --ckpts1 C.ckpt D.ckpt \
+      [--restore auto|direct|loader] \
       [--load-cpu timing|atomic] [--maxinsts 10000000] [--pmu] \
       [--loader-opts "OLD=NEW ..."]
 """
@@ -45,7 +51,7 @@ import m5
 from m5.objects import *
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rmc_common import pick_loader, process_cwd
+from rmc_common import RESTORE_MODES, make_process, resolve_restore
 
 parser = argparse.ArgumentParser(description="RMC: 2 nucleos SMT-2, carga simple + ROI en DerivO3CPU")
 parser.add_argument("--loader",   type=str, required=True, help="Binario loader (no PIE)")
@@ -58,6 +64,9 @@ parser.add_argument("--ckpts1",   type=str, nargs="+", required=True, help="Chec
 parser.add_argument("--maxinsts", type=int, default=10_000_000,
                     help="Instrucciones de ROI por hilo (cada hilo alcanza SU propio objetivo)")
 parser.add_argument("--load-cpu", type=str, default="timing", choices=["timing", "atomic"])
+parser.add_argument("--restore", type=str, default="auto", choices=RESTORE_MODES,
+                    help="direct: gem5 instala los checkpoints sin simular nada (cero ciclos); "
+                         "loader: se simulan los loaders; auto: direct si este gem5 lo soporta")
 parser.add_argument("--maxinsts-list", type=str, default=None,
                     help="Objetivo de instrucciones POR HILO, separado por comas y en el orden "
                          "ckpts0...,ckpts1... Ajustarlo al IPC de cada aplicacion hace que todas "
@@ -77,12 +86,17 @@ parser.add_argument("--pmu", action="store_true",
 args = parser.parse_args()
 
 NT0, NT1 = len(args.ckpts0), len(args.ckpts1)
+RESTORE = resolve_restore(args.restore)
+DIRECT = RESTORE == "direct"
+# Restauracion directa: las O3 son las CPUs activas desde el tick 0 (salvo
+# --no-switch, que deja el ROI en las CPUs simples para diagnostico).
+O3_ACTIVE = DIRECT and not args.no_switch
 
 # Loader, cwd y argumentos de cada checkpoint (rutas absolutas: cada proceso
 # arranca en el cwd de su checkpoint)
 REMAPS = args.loader_opts.split()
-LOADER_EXTRA = list(REMAPS)
-if not args.seq_load and NT0 + NT1 > 1:
+LOADER_EXTRA = []
+if not DIRECT and not args.seq_load and NT0 + NT1 > 1:
     barrier = os.path.join(os.path.abspath(m5.options.outdir), "rmc_barrier")
     open(barrier, "w").close()          # vacio: cada loader anade un byte
     LOADER_EXTRA.append(f"--barrier={barrier}:{NT0 + NT1}")
@@ -105,13 +119,27 @@ system.mem_ctrl.port       = system.membus.mem_side_ports
 system.system_port         = system.membus.cpu_side_ports
 
 
+def build_o3(idx, nt, switched_out=True):
+    cpu_o3 = DerivO3CPU(cpu_id=idx, numThreads=nt, switched_out=switched_out)
+    cpu_o3.max_insts_any_thread = 0
+    if args.pmu:
+        cpu_o3.pmuDispatchActive = True
+        cpu_o3.pmuIssueActive    = True
+        cpu_o3.pmuInitCycle      = 0
+    return cpu_o3
+
+
 def build_core(idx, nt, ckpts):
-    """Crea la CPU simple de carga de un nucleo, con su propia jerarquia
-    privada L1I/L1D/L2. Las DerivO3CPU se crean DESPUES, todas juntas: ver
-    el bloque posterior a las llamadas a build_core()."""
-    cpu_simple = (TimingSimpleCPU(cpu_id=idx, numThreads=nt) if args.load_cpu == "timing"
-                  else AtomicSimpleCPU(cpu_id=idx, numThreads=nt))
-    cpu_simple.max_insts_any_thread = 0
+    """Crea la CPU activa de un nucleo, con su propia jerarquia privada
+    L1I/L1D/L2: la CPU simple de carga o, en restauracion directa, la propia
+    O3. Las DerivO3CPU de conmutacion se crean DESPUES, todas juntas: ver el
+    bloque posterior a las llamadas a build_core()."""
+    if O3_ACTIVE:
+        cpu = build_o3(idx, nt, switched_out=False)
+    else:
+        cpu = (TimingSimpleCPU(cpu_id=idx, numThreads=nt) if args.load_cpu == "timing"
+                      else AtomicSimpleCPU(cpu_id=idx, numThreads=nt))
+        cpu.max_insts_any_thread = 0
 
     if not args.no_caches:
         class L1ICache(Cache):
@@ -131,22 +159,22 @@ def build_core(idx, nt, ckpts):
 
         icache, dcache, l2cache = L1ICache(), L1DCache(), L2Cache()
         l2bus = L2XBar()
-        cpu_simple.icache_port = icache.cpu_side
-        cpu_simple.dcache_port = dcache.cpu_side
+        cpu.icache_port = icache.cpu_side
+        cpu.dcache_port = dcache.cpu_side
         icache.mem_side  = l2bus.cpu_side_ports
         dcache.mem_side  = l2bus.cpu_side_ports
         l2cache.cpu_side = l2bus.mem_side_ports
         l2cache.mem_side = system.membus.cpu_side_ports
     else:
-        cpu_simple.icache_port = system.membus.cpu_side_ports
-        cpu_simple.dcache_port = system.membus.cpu_side_ports
+        cpu.icache_port = system.membus.cpu_side_ports
+        cpu.dcache_port = system.membus.cpu_side_ports
         icache = dcache = l2cache = l2bus = None
 
-    cpu_simple.createInterruptController()
-    for j in range(len(cpu_simple.interrupts)):
-        cpu_simple.interrupts[j].pio           = system.membus.mem_side_ports
-        cpu_simple.interrupts[j].int_requestor = system.membus.cpu_side_ports
-        cpu_simple.interrupts[j].int_responder = system.membus.mem_side_ports
+    cpu.createInterruptController()
+    for j in range(len(cpu.interrupts)):
+        cpu.interrupts[j].pio           = system.membus.mem_side_ports
+        cpu.interrupts[j].int_requestor = system.membus.cpu_side_ports
+        cpu.interrupts[j].int_responder = system.membus.mem_side_ports
 
     # Mismo GLIBC_TUNABLES usado al generar los checkpoints en altek (desactiva
     # AVX/AVX2/BMI2 en el resolvedor IFUNC de glibc). Si el proceso restaurado
@@ -154,6 +182,8 @@ def build_core(idx, nt, ckpts):
     # perezosa) sin este tunable en su entorno, puede elegir una variante
     # AVX2/BMI2 que gem5 no implementa -> panic "Unrecognized/invalid
     # instruction". Se fuerza aqui, no basta con haberlo puesto solo al volcar.
+    # (Solo con loader: en restauracion directa el entorno del proceso es el
+    # del checkpoint, que gen_ckpt.sh ya genera con este tunable.)
     NOAVX_TUNABLES = ("glibc.cpu.hwcaps=-SSE4_2,-SSE4_1,-SSSE3,-AVX,-AVX2,"
                        "-AVX512F,-AVX_Usable,-AVX2_Usable,-AVX512F_Usable,"
                        "-AVX_Fast_Unaligned_Load")
@@ -162,16 +192,15 @@ def build_core(idx, nt, ckpts):
     env_list = [f"{k}={v}" for k, v in env_dict.items()]
     procs = []
     for i, ck in enumerate(ckpts):
-        ld  = pick_loader(ck, args.loader, args.loader_pie)
-        cwd = process_cwd(ck, REMAPS)
-        print(f"  nucleo{idx} hilo{i}: {os.path.basename(ck)} -> {os.path.basename(ld)}  cwd={cwd}",
-              flush=True)
-        procs.append(Process(pid=100 + idx * 10 + i, executable=ld,
-                             cmd=[ld, ck] + LOADER_EXTRA, env=env_list, cwd=cwd))
+        proc, ld, cwd = make_process(ck, RESTORE, args.loader, args.loader_pie, REMAPS,
+                                     LOADER_EXTRA, pid=100 + idx * 10 + i, env=env_list)
+        via = "directa" if DIRECT else os.path.basename(ld)
+        print(f"  nucleo{idx} hilo{i}: {os.path.basename(ck)} -> {via}  cwd={cwd}", flush=True)
+        procs.append(proc)
 
-    cpu_simple.workload = procs
+    cpu.workload = procs
 
-    return cpu_simple, (icache, dcache, l2cache, l2bus)
+    return cpu, (icache, dcache, l2cache, l2bus)
 
 
 # ORDEN DE REGISTRO CRITICO: gem5 asigna los context id a cada contexto de hilo
@@ -183,53 +212,59 @@ def build_core(idx, nt, ckpts):
 # el espacio de direcciones del proceso equivocado -> busca instrucciones en
 # memoria ajena -> panic "Unrecognized/invalid instruction" nada mas entrar al
 # ROI. Por eso: primero cpu0 y cpu1, luego o3_0 y o3_1.
-system.cpu0, caches0 = build_core(0, NT0, args.ckpts0)
-system.cpu1, caches1 = build_core(1, NT1, args.ckpts1)
+if O3_ACTIVE:
+    # Restauracion directa: las O3 (mismos nombres, mismas stats) son las
+    # unicas CPUs, sin CPUs de carga ni conmutacion.
+    system.o3_0, caches0 = build_core(0, NT0, args.ckpts0)
+    system.o3_1, caches1 = build_core(1, NT1, args.ckpts1)
+else:
+    system.cpu0, caches0 = build_core(0, NT0, args.ckpts0)
+    system.cpu1, caches1 = build_core(1, NT1, args.ckpts1)
 if not args.no_caches:
     system.icache0, system.dcache0, system.l2cache0, system.l2bus0 = caches0
     system.icache1, system.dcache1, system.l2cache1, system.l2bus1 = caches1
 
+if not O3_ACTIVE:
+    system.o3_0 = build_o3(0, NT0)
+    system.o3_1 = build_o3(1, NT1)
 
-def build_o3(idx, nt):
-    cpu_o3 = DerivO3CPU(cpu_id=idx, numThreads=nt, switched_out=True)
-    cpu_o3.max_insts_any_thread = 0
-    if args.pmu:
-        cpu_o3.pmuDispatchActive = True
-        cpu_o3.pmuIssueActive    = True
-        cpu_o3.pmuInitCycle      = 0
-    return cpu_o3
+# Solo elige ISA/SO: en directo el ejecutable (el loader) no se carga
+system.workload = SEWorkload.init_compatible(args.loader)
 
-
-system.o3_0 = build_o3(0, NT0)
-system.o3_1 = build_o3(1, NT1)
-
-system.workload = SEWorkload.init_compatible(
-    pick_loader(args.ckpts0[0], args.loader, args.loader_pie))
-
-# Y dentro de cada par, el orden de x86_mixed.py (1 nucleo), ya validado:
-# createThreads() de la CPU simple primero -- es quien crea los objetos ISA por
-# hilo -- y solo despues se comparten esos objetos ya creados con la CPU O3.
-for cpu_simple, cpu_o3 in ((system.cpu0, system.o3_0), (system.cpu1, system.o3_1)):
-    cpu_simple.createThreads()
-    cpu_o3.isa      = cpu_simple.isa
-    cpu_o3.workload = cpu_simple.workload
-    cpu_o3.createThreads()
+if O3_ACTIVE:
+    system.o3_0.createThreads()
+    system.o3_1.createThreads()
+else:
+    # Y dentro de cada par, el orden de x86_mixed.py (1 nucleo), ya validado:
+    # createThreads() de la CPU simple primero -- es quien crea los objetos ISA por
+    # hilo -- y solo despues se comparten esos objetos ya creados con la CPU O3.
+    for cpu_simple, cpu_o3 in ((system.cpu0, system.o3_0), (system.cpu1, system.o3_1)):
+        cpu_simple.createThreads()
+        cpu_o3.isa      = cpu_simple.isa
+        cpu_o3.workload = cpu_simple.workload
+        cpu_o3.createThreads()
 
 root = Root(full_system=False, system=system)
 m5.instantiate()
 
-CORES = [(0, system.cpu0, system.o3_0, NT0, args.ckpts0),
-         (1, system.cpu1, system.o3_1, NT1, args.ckpts1)]
+CORES = [(0, None if O3_ACTIVE else system.cpu0, system.o3_0, NT0, args.ckpts0),
+         (1, None if O3_ACTIVE else system.cpu1, system.o3_1, NT1, args.ckpts1)]
 NT_TOTAL = NT0 + NT1
 
-print(f"**** FASE 1: {NT_TOTAL} loader(es) en {args.load_cpu} (2 nucleos) ****", flush=True)
+if DIRECT:
+    print(f"**** {NT_TOTAL} checkpoints instalados en initState: 0 ciclos de carga ****",
+          flush=True)
+else:
+    print(f"**** FASE 1: {NT_TOTAL} loader(es) en {args.load_cpu} (2 nucleos) ****", flush=True)
 
 # Lista plana de (cpu_simple, tid) de todos los hilos, en orden.
 ALL_THREADS = [(cpu_simple, t)
                for _, cpu_simple, _, nt, _ in CORES
                for t in range(nt)]
 
-if args.seq_load:
+if DIRECT:
+    pass
+elif args.seq_load:
     # CARGA SECUENCIAL. Restaurar dos checkpoints CONCURRENTEMENTE corrompe el
     # estado del proceso restaurado (la aplicacion acaba abortando con ud2 nada
     # mas entrar a su ROI). Se reproduce siempre que las dos restauraciones se
@@ -270,6 +305,8 @@ else:
             raise SystemExit(1)
 
 for core_idx, cpu_simple, cpu_o3, nt, ckpts in CORES:
+    if DIRECT:
+        break
     loaded = [cpu_simple.getCurrentInstCount(t) for t in range(nt)]
     print(f"**** Carga completa nucleo {core_idx}. Instrucciones por hilo: {loaded} ****", flush=True)
 
@@ -279,6 +316,9 @@ if args.no_switch:
     # m5.switchCpus() con dos nucleos".
     print("**** SIN CONMUTAR: la ROI se ejecuta en la CPU simple ****", flush=True)
     ROI_CPUS = [(idx, cpu_simple, nt, ckpts) for idx, cpu_simple, _, nt, ckpts in CORES]
+elif O3_ACTIVE:
+    print("**** ROI en DerivO3CPU desde el tick 0 (restauracion directa) ****", flush=True)
+    ROI_CPUS = [(idx, cpu_o3, nt, ckpts) for idx, _, cpu_o3, nt, ckpts in CORES]
 else:
     print("**** Cambiando ambos nucleos a DerivO3CPU"
           f"{'' if args.no_caches else ' (con caches L1/L2 privadas)'} ****", flush=True)

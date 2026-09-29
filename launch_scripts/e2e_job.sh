@@ -10,7 +10,7 @@
 #   e2e_job.sh --summary RUN_DIR                solo el resumen
 #
 # RUN_DIR contiene repo/ (el repo compilado en el PC), ckpt/, work/,
-# run.env (GEM5_BIN, REMAPS) y tests.tsv, una prueba por linea con campos
+# run.env (GEM5_BIN, REMAPS, RESTORE) y tests.tsv, una prueba por linea con campos
 # separados por tabuladores:
 #
 #   nombre  modo(st|smt|genfail)  ckpts(a,b)  maxinsts  regex_esperada  minimo  regex_fallo  timeout_s
@@ -21,7 +21,8 @@
 #
 # Cada prueba lanza gem5 y pasa si:
 #   - gem5 termina con codigo 0 y antes del timeout,
-#   - el loader llega a la frontera del ROI (m5_exit) en todos los procesos,
+#   - el loader llega a la frontera del ROI (m5_exit) en todos los procesos
+#     (con restauracion directa: gem5 instala los checkpoints en initState),
 #   - no aparece ningun error (panic/fatal de gem5, FATAL del loader,
 #     corrupcion de malloc, violacion de segmento, regex_fallo),
 #   - regex_esperada aparece al menos `minimo` veces en la salida.
@@ -57,13 +58,14 @@ run_test() {   # run_test nombre modo ckpts maxinsts expect min failre tmo
         st)
             cmd=("$GEM5_BIN" --outdir="$d/m5out" "$REPO/gem5_configs/x86_st_timing.py"
                  --cmd="$REPO/build/loader" --options="${cks[0]} ${REMAPS:-}"
-                 --cpu=atomic --maxinsts="$maxinsts")
+                 --restore="${RESTORE:-auto}" --cpu=atomic --maxinsts="$maxinsts")
             need_exits=1
             ;;
         smt)
             cmd=("$GEM5_BIN" --outdir="$d/m5out" "$REPO/gem5_configs/x86_mixed.py"
                  --loader="$REPO/build/loader" --ckpts "${cks[@]}"
-                 --load-cpu=timing --maxinsts="$maxinsts" --loader-opts="${REMAPS:-}")
+                 --restore="${RESTORE:-auto}" --load-cpu=timing --maxinsts="$maxinsts"
+                 --loader-opts="${REMAPS:-}")
             need_exits=${#cks[@]}
             ;;
         genfail)
@@ -86,7 +88,9 @@ run_test() {   # run_test nombre modo ckpts maxinsts expect min failre tmo
     if [ "$rc" -eq 124 ]; then
         reason="timeout (${tmo}s)"
     else
-        if [ "$mode" = st ]; then
+        if grep -qE "instalados? en initState" "$log"; then
+            exits=$need_exits           # restauracion directa: no hay loader
+        elif [ "$mode" = st ]; then
             grep -q "Loader terminado: 'm5_exit instruction encountered'" "$log" && exits=1 || exits=0
         else
             exits=$(grep -c "\] listo en tick" "$log")
@@ -127,6 +131,7 @@ summarize() {
         echo "rmc e2e: job ${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}} en $(hostname) $(date -Is)"
         echo "gem5: $GEM5_BIN"
         echo "remapeos: ${REMAPS:-(ninguno)}"
+        echo "restauracion: ${RESTORE:-auto}"
         echo ""
         while IFS=$'\t' read -r name rest; do
             [ -z "${name:-}" ] && continue

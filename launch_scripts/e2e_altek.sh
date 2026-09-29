@@ -30,6 +30,9 @@
 #   --spec LISTA        benchmarks (coma: mcf,lbm,...) o "all" = todos los
 #                       rate con directorio de ejecucion preparado en SPEC_DIR
 #   --spec-insts N      instrucciones de ROI por benchmark (10000000)
+#   --restore M         auto|direct|loader (auto): direct = gem5 instala el
+#                       checkpoint sin simular el loader (Process.rmcCheckpoint);
+#                       auto = direct si el gem5 de altek lo soporta
 #   --no-tests          solo SPEC, sin las pruebas de test/
 #   --partition P       particion SLURM (compute)
 #   --time T            limite de cada tarea (03:00:00)
@@ -65,11 +68,13 @@ TIME="03:00:00"
 MEM="${RMC_MEM:-16G}"
 PARALLEL="${RMC_MAX_PARALLEL:-8}"
 SPEC_LIST=""; SPEC_INSTS=10000000; RUN_TESTS=1; CLEAN=0; ATTACH=""
+RESTORE="${RMC_RESTORE:-auto}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --spec)       SPEC_LIST=$2; shift 2 ;;
         --spec-insts) SPEC_INSTS=$2; shift 2 ;;
+        --restore)    RESTORE=$2; shift 2 ;;
         --no-tests)   RUN_TESTS=0; shift ;;
         --partition)  PART=$2; shift 2 ;;
         --time)       TIME=$2; shift 2 ;;
@@ -305,6 +310,7 @@ fi
 {
     printf 'GEM5_BIN=%q\n' "$GEM5_REMOTE"
     printf 'REMAPS=%q\n'   "${REMAPS[*]}"
+    printf 'RESTORE=%q\n'  "$RESTORE"
 } > "$LOCAL_RUN/run.env"
 
 # ---- 3. Subida ---------------------------------------------------------------------

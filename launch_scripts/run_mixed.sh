@@ -1,12 +1,18 @@
 #!/bin/bash
-# run_mixed.sh - Restauracion RMC con CPU mixta: carga en CPU simple, ROI en O3.
+# run_mixed.sh - Restauracion RMC con el ROI en O3.
 #
 #   ./run_mixed.sh <tag> <maxinsts> <timing|atomic> [--pmu] <ckpt1> [ckpt2 ...]
 #
 # Un checkpoint  -> single-thread.
 # N checkpoints  -> SMT-N multiprogramado sobre un mismo nucleo O3.
 #
-# Variables de entorno: GEM5_BIN, LOADER, CKPT_DIR, OUT_BASE, LOADER_OPTS.
+# RMC_RESTORE=auto|direct|loader (auto): direct = gem5 instala el checkpoint
+# sin simular el loader y la O3 arranca ya en el ROI; loader = el loader en la
+# CPU simple (timing|atomic) y switch a O3 en su m5_exit. RMC_WARMUP=N: en
+# directo, N instrucciones en la CPU simple antes de pasar a O3.
+#
+# Variables de entorno: GEM5_BIN, LOADER, CKPT_DIR, OUT_BASE, LOADER_OPTS,
+# RMC_RESTORE, RMC_WARMUP.
 # Remapeos de rutas: los <ckpt>.remap que deja regenerate_ckpt_noavx.sh
 # --upload junto a cada checkpoint (mas LOADER_OPTS="OLD=NEW ...").
 #
@@ -41,7 +47,8 @@ rm -f "$OUTDIR"/CPU_*.csv
 echo "=================================================="
 echo " tag        : $TAG"
 echo " checkpoints: $CKPTS"
-echo " carga      : $LOADCPU     ROI: DerivO3CPU + caches L1/L2  $PMU"
+echo " restaura   : ${RMC_RESTORE:-auto}   carga/calentamiento: $LOADCPU  (${RMC_WARMUP:-0} insts)"
+echo " ROI        : DerivO3CPU + caches L1/L2  $PMU"
 echo " maxinsts   : $MAXINSTS (por hilo)"
 echo " remapeos   : ${REMAPS:-(ninguno)}"
 echo " outdir     : $OUTDIR"
@@ -53,6 +60,7 @@ cd "$OUTDIR"
     --loader-pie="$(realpath "$LOADER_PIE")" \
     --ckpts $CKPTS \
     --load-cpu="$LOADCPU" \
+    --restore="${RMC_RESTORE:-auto}" --warmup="${RMC_WARMUP:-0}" \
     --maxinsts="$MAXINSTS" --loader-opts="$REMAPS" $PMU
 RC=$?
 

@@ -5,18 +5,22 @@ A diferencia de x86_st.py (que simula TODO el loader en DerivO3CPU y tarda
 horas), este script usa una CPU simple para la fase del loader, que es
 puro memcpy y no aporta nada microarquitectonico.
 
-Fases:
+Fases (--restore loader):
   1. El loader restaura las regiones y ejecuta m5_exit(0) justo antes de
      saltar al ROI  ->  gem5 sale del bucle de simulacion.
   2. Reseteamos stats y programamos un limite de --maxinsts instrucciones.
   3. Simulamos el ROI y reportamos cuantas instrucciones se ejecutaron.
+
+Con --restore direct (por defecto si el gem5 la soporta) no hay fase 1: gem5
+instala el checkpoint en Process.initState() y la CPU arranca en el ROI.
 
 El loader se elige solo segun el checkpoint (build/loader o
 build/loader_pie, ver rmc_common.py).
 
 Uso:
   gem5.opt --outdir=DIR x86_st_timing.py --cmd LOADER --options "CKPT [remaps]" \
-           [--cpu timing|atomic] [--caches] [--maxinsts 1000000]
+           [--restore auto|direct|loader] [--cpu timing|atomic] [--caches] \
+           [--maxinsts 1000000]
 """
 import argparse
 import os
@@ -25,12 +29,15 @@ import m5
 from m5.objects import *
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rmc_common import pick_loader, process_cwd
+from rmc_common import RESTORE_MODES, make_process, resolve_restore
 
 parser = argparse.ArgumentParser(description="Arnes rapido (CPU simple) para restaurar checkpoints RMC")
 parser.add_argument("--cmd",      type=str, required=True, help="Binario loader")
 parser.add_argument("--options",  type=str, default="",    help="Argumentos del loader (ckpt + remapeos)")
 parser.add_argument("--maxinsts", type=int, default=1000000, help="Instrucciones a simular en el ROI")
+parser.add_argument("--restore",  type=str, default="auto", choices=RESTORE_MODES,
+                    help="direct: gem5 instala el checkpoint sin simular nada (cero ciclos); "
+                         "loader: se simula el loader; auto: direct si este gem5 lo soporta")
 parser.add_argument("--cpu",      type=str, default="timing", choices=["timing", "atomic"],
                     help="Modelo de CPU (timing = TimingSimpleCPU, atomic = AtomicSimpleCPU)")
 parser.add_argument("--caches",   action="store_true", help="Anadir jerarquia L1/L2 (mas lento)")
@@ -38,6 +45,7 @@ parser.add_argument("--mem",      type=str, default="8GiB", help="Tamano de memo
 parser.add_argument("--trace-roi", action="store_true",
                     help="Activar el flag de depuracion Exec SOLO durante el ROI")
 args = parser.parse_args()
+RESTORE = resolve_restore(args.restore)
 
 # -- Sistema ----------------------------------------------------------------
 system = System()
@@ -97,15 +105,16 @@ system.mem_ctrl.port       = system.membus.mem_side_ports
 # -- Proceso ----------------------------------------------------------------
 env_list = [f"{k}={v}" for k, v in os.environ.items()]
 opts = args.options.split()
-if opts:
-    # Absoluta: el proceso arranca en el cwd del checkpoint, no en el de gem5
-    opts[0] = os.path.abspath(opts[0])
-loader = pick_loader(opts[0], args.cmd) if opts else args.cmd
-cwd = process_cwd(opts[0], opts[1:]) if opts else os.getcwd()
-print(f"**** Loader: {loader}   cwd: {cwd} ****", flush=True)
-process = Process(pid=100, executable=loader,
-                  cmd=[loader] + opts, env=env_list, cwd=cwd)
-system.workload     = SEWorkload.init_compatible(loader)
+if not opts:
+    raise SystemExit("--options debe empezar por el checkpoint")
+# Absoluta: el proceso arranca en el cwd del checkpoint, no en el de gem5
+ckpt = os.path.abspath(opts[0])
+process, exe, cwd = make_process(ckpt, RESTORE, args.cmd, remaps=opts[1:], env=env_list)
+if RESTORE == "direct":
+    print(f"**** Restauracion directa (sin loader)   cwd: {cwd} ****", flush=True)
+else:
+    print(f"**** Loader: {exe}   cwd: {cwd} ****", flush=True)
+system.workload     = SEWorkload.init_compatible(exe)
 system.cpu.workload = process
 system.cpu.createThreads()
 
@@ -113,18 +122,22 @@ root = Root(full_system=False, system=system)
 m5.instantiate()
 
 # -- Fase 1: loader ---------------------------------------------------------
-print(f"**** FASE 1: restaurando checkpoint en {args.cpu} ****", flush=True)
-exit_event  = m5.simulate()
-cause       = exit_event.getCause()
-loader_ins  = system.cpu.getCurrentInstCount(0)
-print(f"**** Loader terminado: '{cause}' tras {loader_ins} instrucciones "
-      f"(tick {m5.curTick()}) ****", flush=True)
+if RESTORE == "direct":
+    loader_ins = 0
+    print("**** Checkpoint instalado en initState: 0 ciclos de carga ****", flush=True)
+else:
+    print(f"**** FASE 1: restaurando checkpoint en {args.cpu} ****", flush=True)
+    exit_event  = m5.simulate()
+    cause       = exit_event.getCause()
+    loader_ins  = system.cpu.getCurrentInstCount(0)
+    print(f"**** Loader terminado: '{cause}' tras {loader_ins} instrucciones "
+          f"(tick {m5.curTick()}) ****", flush=True)
 
-if cause != "m5_exit instruction encountered":
-    print("!!! El loader NO llego a la frontera del ROI (falta el m5_exit "
-          "o fallo antes). No se simula el ROI.", flush=True)
-    print(f"Exited @ tick {m5.curTick()} because {cause}")
-    raise SystemExit(1)
+    if cause != "m5_exit instruction encountered":
+        print("!!! El loader NO llego a la frontera del ROI (falta el m5_exit "
+              "o fallo antes). No se simula el ROI.", flush=True)
+        print(f"Exited @ tick {m5.curTick()} because {cause}")
+        raise SystemExit(1)
 
 # -- Fase 2: ROI ------------------------------------------------------------
 m5.stats.reset()

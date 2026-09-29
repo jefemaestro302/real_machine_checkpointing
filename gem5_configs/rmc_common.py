@@ -1,6 +1,15 @@
 """
 rmc_common.py - Helpers compartidos por las configs de gem5 de RMC.
 
+Modo de restauracion (--restore de las configs):
+  direct  gem5 instala el checkpoint en Process.initState() (parametros
+          Process.rmcCheckpoint / rmcRemaps del gem5 del GAP): cero ciclos
+          simulados, el primer ciclo ya es el ROI. Sin loader, sin m5_exit,
+          sin barrera SMT.
+  loader  se simula build/loader(_pie), que restaura con mmap/memcpy y
+          marca la frontera del ROI con m5_exit. Funciona con cualquier gem5.
+  auto    direct si el gem5 lo soporta, loader si no.
+
 Eleccion del loader: el break inicial de un binario estatico es el final de
 su segmento mas alto. build/loader lo tiene en ~0x200xxxxx (correcto para
 objetivos no PIE, cuyo heap queda por debajo) y build/loader_pie en
@@ -77,6 +86,50 @@ def process_cwd(ckpt, remaps):
               f"se usa {os.getcwd()}. Anade un remapeo OLD=NEW.", flush=True)
         return os.getcwd()
     return cwd
+
+
+RESTORE_MODES = ("auto", "direct", "loader")
+
+
+def gem5_has_direct_restore():
+    """True si este gem5 tiene Process.rmcCheckpoint."""
+    from m5.objects import Process
+    return "rmcCheckpoint" in Process._params
+
+
+def resolve_restore(mode):
+    """auto -> direct si el gem5 lo soporta, loader si no."""
+    has = gem5_has_direct_restore()
+    if mode == "auto":
+        return "direct" if has else "loader"
+    if mode == "direct" and not has:
+        raise SystemExit("--restore direct: este gem5 no tiene Process.rmcCheckpoint "
+                         "(compila el gem5 del GAP con la restauracion directa, o usa "
+                         "--restore loader)")
+    return mode
+
+
+def make_process(ckpt, restore, loader, loader_pie=None, remaps=(), loader_args=(),
+                 pid=100, env=()):
+    """Process de un checkpoint. Devuelve (process, ejecutable, cwd).
+
+    direct: el ejecutable solo le dice a gem5 la ISA/SO (vale cualquier
+    binario estatico x86-64; se usa el loader porque siempre esta) y NO se
+    carga: gem5 instala el checkpoint con los remapeos. El entorno del
+    proceso es el del checkpoint (env no se usa).
+    loader: el loader elegido segun el checkpoint, con remapeos y
+    loader_args (p.ej. --barrier) en su linea de ordenes.
+    """
+    from m5.objects import Process
+    cwd = process_cwd(ckpt, remaps)
+    if restore == "direct":
+        proc = Process(pid=pid, executable=loader, cmd=[loader, ckpt], env=list(env),
+                       cwd=cwd, rmcCheckpoint=ckpt, rmcRemaps=list(remaps))
+        return proc, loader, cwd
+    ld = pick_loader(ckpt, loader, loader_pie)
+    proc = Process(pid=pid, executable=ld, cmd=[ld, ckpt] + list(remaps) + list(loader_args),
+                   env=list(env), cwd=cwd)
+    return proc, ld, cwd
 
 
 def pick_loader(ckpt, loader, loader_pie=None):
