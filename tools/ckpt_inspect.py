@@ -4,6 +4,7 @@ import os, struct, sys
 
 HDR_SZ, REGS_OFF, REGS_SZ = 4480, 64, 4352
 ROIRIP_OFF, STACKVA_OFF   = 4416, 4424
+BRK_OFF                   = 4432
 REGION_SZ, FD_SZ          = 104, 272
 CKPT_MAGIC, CKPT_VERSION  = 0x474D35434B505400, 2
 CKPT_FLAG_HEAP            = 0x04
@@ -19,12 +20,14 @@ def main(path, extra_addr=None):
     magic, ver = struct.unpack_from("<QI", hdr, 0)
     nreg, nfds = struct.unpack_from("<II", hdr, 12)
     roi_rip, stack_va = struct.unpack_from("<QQ", hdr, ROIRIP_OFF)
+    brk = struct.unpack_from("<Q", hdr, BRK_OFF)[0]
     print(f"magic=0x{magic:x} ver={ver} num_regions={nreg} num_fds={nfds}")
     if magic != CKPT_MAGIC:
         print("  !! magic incorrecto: no es un checkpoint RMC")
     if ver != CKPT_VERSION:
         print(f"  !! version {ver} != {CKPT_VERSION}: el loader actual lo rechazara, regeneralo")
-    print(f"roi_entry_rip=0x{roi_rip:x}  stack_va=0x{stack_va:x}")
+    print(f"roi_entry_rip=0x{roi_rip:x}  stack_va=0x{stack_va:x}  "
+          f"brk={f'0x{brk:x}' if brk else 'no guardado (final del [heap])'}")
 
     vals = struct.unpack_from("<26Q", hdr, REGS_OFF)
     print("\n--- REGISTROS ---")

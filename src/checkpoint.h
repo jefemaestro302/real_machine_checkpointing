@@ -95,8 +95,13 @@ typedef struct {
     ckpt_regs_t  regs;           /* CPU state at ROI entry */
     uint64_t     roi_entry_rip;  /* RIP we want to jump to after restore */
     uint64_t     stack_va;       /* the stack VA we saved (for the loader) */
-    uint8_t      padding[44];    /* reserved, must be zero */
+    uint64_t     brk;            /* program break, 0 = not recorded (gem5
+                                    then uses the end of the [heap]) */
+    uint8_t      padding[36];    /* reserved, must be zero */
 } ckpt_header_t;
+
+/* gem5 (src/sim/rmc_checkpoint.hh) reads and writes this same layout */
+_Static_assert(sizeof(ckpt_header_t) == 4480, "ckpt_header_t layout changed");
 
 /* ------------------------------------------------------------------ */
 /*  Convenience: offsets for regions and fds                          */
