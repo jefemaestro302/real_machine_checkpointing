@@ -1,225 +1,312 @@
-# HANDOFF: validar el flujo RMC con SPEC en altek
+# HANDOFF: validar la restauración directa en altek, unificar versiones y llevarlo a las ramas principales
 
 Para una instancia (persona o agente) que trabaja **en el PC del usuario**, con
-este repo en la rama `bug-fixes`, y que tiene que comprobar que los
-checkpoints de SPEC se generan en el PC y se restauran y simulan en gem5 en
-altek. Lo que importa son las SPEC; las pruebas de `test/` acompañan porque
-aíslan cada mecanismo y ayudan a diagnosticar si una SPEC falla.
+acceso ssh a altek. Afecta a dos repos:
 
-**Orden de trabajo:**
-1. Comprobaciones previas (§1).
-2. Recompilar SPEC en Docker (§1b).
-3. Lanzar el e2e con `--spec all` (§2).
-4. Interpretar el resultado (§3) y diagnosticar los fallos (§4).
-5. Informar al usuario (§6).
-
-Si algo bloquea (falta SPEC instalado, falta la clave ssh, la partición no
-existe…), párate y pregunta al usuario en lugar de improvisar.
-
-## Estado
-
-- La rama `bug-fixes` corrige los bugs de [`docs/BUG_FIXES.md`](docs/BUG_FIXES.md)
-  y unifica la generación: **todo** checkpoint sale de
-  `launch_scripts/gen_ckpt.sh`, y los benchmarks se definen solo en
-  `launch_scripts/benchmarks.sh`.
-- **Cubre todas las SPEC rate** (`NNN.*_r`, intrate + fprate) que estén
-  compiladas y preparadas. El comando de cada benchmark se lee del
-  `speccmds.cmd` que deja `runcpu --action=setup` en su directorio de
-  ejecución; si hay varias invocaciones, se usa la primera.
-  - `mcf` y `perlbench` tienen el instante del volcado medido con perf; el
-    resto se vuelca a los 2 s (`RMC_SPEC_NS`). Para probar que el flujo
-    funciona basta; para medir, hay que ajustar ese instante por benchmark.
-  - Las speed (`_s`) no entran: usan OpenMP y el checkpoint es de un solo
-    hilo.
-- `launch_scripts/e2e_altek.sh` hace todo desde el PC: compila, genera,
-  sube, lanza un array SLURM (una tarea por prueba, 8 a la vez), espera y da
-  el veredicto. Un benchmark que no se pueda generar no para los demás:
-  aparece como `FAIL` con el motivo.
-- **Validado en altek el 29-09-2026:** `e2e_altek.sh --spec all`, job 151440,
-  **30/30**: las 7 pruebas de `test/` y las 23 SPEC rate, compiladas con
-  `docker/Dockerfile.spec` (gcc 11.4), con 10 M instrucciones de ROI cada una.
-  En unos 30 min; la más lenta, xz (unos 15 min). Un fallo nuevo indica una
-  regresión o un cambio del entorno (gem5, SPEC, toolchain).
-- Formato de checkpoint v2: los `.ckpt` antiguos (v1) se rechazan. El e2e
-  genera los suyos.
-
-## Docker: qué sí y qué no
-
-| Paso | Dónde | Por qué |
+| Repo | Rama con el trabajo | Rama principal |
 |---|---|---|
-| Compilar SPEC sin AVX | **Docker** (`gem5_noavx_env` de `docker/Dockerfile.spec`, `specs/config/gem5_noavx.cfg`) | toolchain reproducible; nunca se compila en el clúster |
-| Generar checkpoints | **Host del PC, fuera de Docker** | el seccomp de Docker no deja desactivar ASLR (`setarch -R`) |
-| Simular | altek (gem5 vía SLURM) | |
+| [`jefemaestro302/real_machine_checkpointing`](https://github.com/jefemaestro302/real_machine_checkpointing) (RMC) | `claude/confident-franklin-kra1vo` | `master` |
+| [`jefemaestro302/gap_gem5`](https://github.com/jefemaestro302/gap_gem5) (gem5 24.1.0.2 del GAP) | `claude/confident-franklin-kra1vo` | `main` |
 
-Solo hay una forma de compilar SPEC, y es en Docker:
-`generate_all_spec_checkpoints.sh`. El e2e **no usa Docker**: da por hecho
-que SPEC ya está compilado en `<repo>/specs/benchspec/CPU` con los
-directorios de ejecución preparados.
+**Objetivo, en este orden:**
+1. Inventariar todas las versiones de código que existen (§2) y unificarlas en
+   una rama de integración de `gap_gem5` (§3).
+2. Compilar esa versión en altek **sin pisar el gem5 que se usa ahora** (§4).
+3. Probar en altek los dos modos de restauración, con las pruebas de `test/` y
+   con SPEC (§5).
+4. Si todo pasa, llevar ambos repos a sus ramas principales (§6) y dejar altek
+   con una sola instalación de cada uno (§7).
+5. Informar al usuario (§8).
 
-## 1. Comprobaciones previas (en el PC)
+**Regla general:** si algo bloquea o hay que decidir sobre código ajeno (ramas
+de otras personas, ficheros de experimentos, cambios locales de altek que no
+se entienden), **párate y pregunta al usuario** en lugar de improvisar. Nunca
+`git push --force`, nunca reescribir historia de `master`/`main`, nunca borrar
+ramas remotas.
+
+---
+
+## 1. Qué se ha hecho (contexto)
+
+**Restauración directa (zero-cycle restore).** Antes, un checkpoint RMC se
+restauraba simulando `build/loader`, que reconstruía el proceso con
+`mmap`/`memcpy` dentro de gem5 (millones de instrucciones) y marcaba el ROI
+con `m5_exit`. Ahora gem5 instala el checkpoint él mismo en
+`Process::initState()` y el primer ciclo simulado ya es el ROI. El formato
+`.ckpt` no cambia (v2) y el loader sigue disponible (`--restore loader`).
+Diseño, uso y revisión de gem5 upstream: [`docs/RESTAURACION_DIRECTA.md`](docs/RESTAURACION_DIRECTA.md).
+
+**Commits** (ambos repos parten de su rama principal actual, así que el merge
+puede ser fast-forward):
+
+| Repo | Base | Commits |
+|---|---|---|
+| gap_gem5 | `main` = `cf36d84f` | `4e7be909` restauración directa (`Process.rmcCheckpoint`/`rmcRemaps`, `src/sim/rmc_checkpoint.{hh,cc}`, hook en `X86_64Process::initState`); `d32b11e1` arreglo de `BaseMMU::takeOverFrom` para conmutar CPUs x86 con SMT y export de `suspendContext`/`activateContext` en `BaseCPU.py` |
+| RMC | `master` = `3f67067` | `1e48919` `--restore auto\|direct\|loader` en las configs, lanzadores y e2e; `b37c07a` `mem_mode` según la CPU de arranque, `smt2` válido en ambos modos, documentación |
+
+**Validado en un contenedor (no en altek):** `gem5.opt` compilado desde
+`gap_gem5@d32b11e1` + e2e real (`e2e_altek.sh` con `RMC_REMOTE=local` y un
+SLURM simulado), pruebas de `test/` (sin SPEC):
+
+- `--restore direct`: **7/7 PASS**. `--restore loader`: **7/7 PASS**.
+- Misma salida en ambos modos (checksum de `target_app` = nativo). En directo
+  el ROI tiene 21 instrucciones menos: las del trampolín del loader tras su
+  `m5_exit`, que antes se contaban como ROI.
+- Antes del ROI: `target_app` 3,6 M instrucciones y 7,3 s de gem5 con loader
+  frente a 0 instrucciones y 0,8 s en directo; SMT-2 con loader 4,2 M
+  instrucciones por hilo y 45 ms simulados, en directo 0.
+- También probados: `x86_mixed.py --restore auto` (elige directa) con
+  `--pmu`, `--warmup` (AtomicSimpleCPU + SMT-2) y `x86_mixed_2core.py` en
+  ambos modos.
+
+**Lo que NO se ha probado:** SPEC (no estaba en el contenedor), altek, y un
+gem5 con los arreglos de `fix-smt-wakeup` (§2).
+
+**Indicio de que altek no coincide con GitHub:** con `gap_gem5` tal cual
+está en GitHub (`main`), `m5.switchCpus()` aborta en un `gem5.opt`
+(`Port::takeOverFrom: old->isConnected()`), y `x86_mixed_2core.py` falla
+porque `BaseCPU.py` no exporta `suspendContext`. Sin embargo, la e2e pasaba
+30/30 en altek (job 151440) y la cabecera de `x86_mixed_2core.py` dice que
+"el árbol está parcheado". Por tanto, el gem5 de altek tiene cambios que no
+están en GitHub, o se compiló sin asserts. Hay que averiguarlo en §2.
+
+---
+
+## 2. Inventario de versiones
+
+Rellena una tabla como esta y enséñasela al usuario antes de tocar nada:
+
+| Copia | Dónde | Qué es | Diferencias con la rama de trabajo |
+|---|---|---|---|
+| RMC `master` | GitHub | base de la rama de trabajo | ninguna salvo los 2 commits |
+| RMC en altek | `~/TFM/repositories/real_machine_checkpointing` (clon git, `install_on_altek.sh`) | ¿rama? ¿cambios locales? | `git status`, `git log origin/master..HEAD` |
+| RMC en el PC | el clon desde el que se lanza la e2e | ¿rama? ¿cambios locales? | ídem |
+| gap_gem5 `main` | GitHub | base de la rama de trabajo | — |
+| gap_gem5 `fix-smt-wakeup` | GitHub | 3 commits (junio 2026, Daniel Escribano): arreglos de la O3 en SMT | ver abajo |
+| gap_gem5 `executors` | GitHub | scripts de lanzamiento e IDC (marzo 2026); 15 commits por detrás de `main` | ver abajo |
+| gap_gem5 en altek | `~/gap_gem5` de cada usuario (`/mnt/beegfs/gap/<usuario>@upvnet.upv.es/gap_gem5`: hay al menos `descrom` y `mapecfer`) | **no es un clon git**: se sube con `scripts/sync/sync_to_altek.sh` (rsync sin `.git/`) | `diff -r` de `gem5/src` y `gem5/configs` contra la rama de trabajo |
+| gap_gem5 en el PC | desde donde se lanza `sync_to_altek.sh` | puede tener cambios sin subir | pregunta al usuario dónde está |
+
+Comandos útiles:
 
 ```bash
-# repo (si no está clonado: git clone https://github.com/jefemaestro302/real_machine_checkpointing)
-cd <repo> && git fetch origin && git checkout bug-fixes && git pull origin bug-fixes
-uname -m                                   # x86_64
-setarch -R true && echo ok                 # si falla: estás dentro de Docker
-for t in gcc make python3 rsync ssh readelf objdump; do command -v $t >/dev/null || echo "falta $t"; done
-ssh altek1.gap.upv.es 'echo ok; ls ~/gap_gem5/gem5/build/X86/gem5.opt; sinfo -s'
-ls -d specs/benchspec/CPU/*_r/run/run_base_train_test_compilacion-m64.0000   # benchmarks preparados
+# gap_gem5: ramas de GitHub
+git -C gap_gem5 fetch origin
+git -C gap_gem5 log --oneline origin/main..origin/fix-smt-wakeup
+git -C gap_gem5 diff --stat origin/main...origin/fix-smt-wakeup -- gem5/src gem5/configs
+git -C gap_gem5 log --oneline origin/main..origin/executors
+
+# gap_gem5 de altek frente a la rama de trabajo (solo fuentes; excluye build/)
+rsync -a --exclude build/ --exclude m5out/ altek1.gap.upv.es:gap_gem5/gem5/src/ /tmp/altek_src/
+diff -ru gap_gem5/gem5/src /tmp/altek_src | diffstat     # (o diff -rq)
 ```
 
-- **ssh:** si pide contraseña se pide una vez; la conexión se reutiliza. Para
-  un agente sin terminal interactiva hace falta una clave ssh ya configurada.
-- **Partición:** el script usa `compute`. Si `sinfo -s` no la lista, pasa
-  `--partition <otra>`.
-- **gem5 en otra ruta:** exporta `RMC_GEM5_REMOTE=/ruta/gem5.opt`.
+Lo que ya se sabe de las ramas de GitHub:
 
-## 1b. Recompilar SPEC (en el PC, con Docker)
+- **`fix-smt-wakeup`** (`a95da5ff`, `32053e71`, `922d9b2e`): cambia
+  `gem5/src/cpu/o3/{commit,cpu,fetch}.{cc,hh}` (livelock por doble borrado de
+  instrucciones squashed en SMT, fuga del assert de instcount, despertar de
+  hilos SMT y bloqueo en `execve`), más `scripts/sync/sync_to_altek.sh` y un
+  test. Además toca **unos 1450 ficheros de `benchmarks/gap_bench/experiments/`,
+  `scripts/python/manager_workloads/` y `scripts/python/venv/`**, pero solo
+  cambia el prefijo de ruta `mapecfer@...` → `descrom@...` (salidas de
+  experimentos regeneradas y shebangs del venv). **No se solapa** con los
+  ficheros de la restauración directa.
+- **`executors`**: scripts de SLURM y de gráficas (`scripts/bash/X86/`,
+  `scripts/python/priority_idc_investigation/`...). No toca `gem5/src`.
 
-Hazlo siempre antes del e2e, y en todo caso si faltan benchmarks, si alguno
-falla por AVX o si los binarios son de antes de esta rama. Así todos salen
-de la misma toolchain y la misma config.
+---
 
-**Datos:**
+## 3. Unificación de `gap_gem5`
 
-| Qué | Valor |
-|---|---|
-| Árbol SPEC CPU2017 | instalado en `<repo>/specs/`: `specs/shrc`, `specs/bin/`, `specs/benchspec/CPU/`. No se versiona (licencia) |
-| Config | `specs/config/gem5_noavx.cfg` (versionada) |
-| Label | `test_compilacion`, más `-m64`; debe coincidir con `RMC_SPEC_LABEL` |
-| Tuning | `base`, `-O3 -march=x86-64 -mtune=generic`: sin AVX, con 1 copia |
-| Carga | `train` (`RMC_SPEC_SIZE`) |
-| Directorio de ejecución resultante | `specs/benchspec/CPU/<NNN.bench_r>/run/run_base_train_test_compilacion-m64.0000/`, con el binario, las entradas y `speccmds.cmd` |
-| Compiladores | `gcc-11`, `g++-11` y `gfortran-11` en `/usr/bin`, los que pide la config |
-| Imagen Docker | `gem5_noavx_env:latest`, de `docker/Dockerfile.spec` (Ubuntu 22.04). El script la construye si no existe |
-| Host | Linux x86-64 con glibc ≥ 2.35 (Ubuntu 22.04 o posterior): los binarios son dinámicos y se ejecutan fuera del contenedor al generar |
-| Qué compila `all` | las suites `intrate` y `fprate`: los ~23 benchmarks rate |
-
-**Comandos:**
+Crea una rama de integración desde la rama de trabajo, que ya contiene `main`:
 
 ```bash
-docker info >/dev/null && echo docker-ok      # Docker sin sudo (usuario en el grupo docker)
-ls specs/shrc specs/config/gem5_noavx.cfg     # SPEC instalado
-./generate_all_spec_checkpoints.sh --build-only            # todas las rate (horas)
-./generate_all_spec_checkpoints.sh --build-only lbm xz     # solo algunas
+cd gap_gem5
+git checkout -b integration/rmc-direct origin/claude/confident-franklin-kra1vo
 ```
 
-- **Qué hace:** construye la imagen si falta y, dentro de ella, ejecuta
-  `runcpu --action=build` y `runcpu --action=setup --size=train`. Corre con el
-  usuario del host (`--user`) para que los ficheros de `specs/` sean suyos.
-- **Resultado:** al final imprime `Preparados: ...` y `SIN preparar: ...`.
-  Un benchmark que no compila no para a los demás; su log está en
-  `specs/benchspec/CPU/<b>/build/build_base_test_compilacion-m64.0000/make.out`.
-- **Sin `--build-only`,** además genera checkpoints en el host. No hace falta
-  para el e2e, que genera los suyos.
-- **Si falla por permisos en `specs/`** (restos de compilaciones anteriores
-  hechas como root): `sudo chown -R "$USER": specs`.
-- **Si SPEC no está instalado en `specs/`,** hay que instalarlo desde la ISO
-  de SPEC CPU2017, y eso lo tiene que hacer el usuario, porque la ISO es suya:
+1. **Arreglos de `fix-smt-wakeup`**: incorpora los cambios de `gem5/src`
+   (y `scripts/sync/sync_to_altek.sh` y el test si el usuario quiere). **Pregunta
+   al usuario** qué hacer con los ~1450 ficheros de experimentos/venv: lo
+   natural es no arrastrarlos (son salidas regeneradas con otro usuario, y el
+   venv no debería estar versionado), así que probablemente toque traer solo
+   las fuentes, p. ej.
+   `git checkout origin/fix-smt-wakeup -- gem5/src/cpu/o3 scripts/sync benchmarks/gap_bench/experiments/test_smt_wakeup.sh`
+   y un commit que cite los tres originales. Si prefiere un merge completo,
+   `git merge origin/fix-smt-wakeup`.
+2. **`executors`**: pregunta al usuario si entra ahora o se queda como rama
+   aparte. Si entra: `git merge origin/executors` y resolver conflictos (van
+   15 commits por detrás de `main`).
+3. **Cambios que solo están en altek** (resultado del `diff` de §2): por cada
+   fichero, decide con el usuario si se sube, se descarta o ya está cubierto.
+   Casos esperables:
+   - export de `suspendContext`/`activateContext` en `src/cpu/BaseCPU.py`:
+     ya está en la rama de trabajo (`d32b11e1`);
+   - algo en `src/arch/generic/mmu.cc` o `src/cpu/base.cc` que evite el
+     assert de `switchCpus()`: comparar con `d32b11e1` y quedarse con uno;
+   - cualquier otro cambio en `src/sim/syscall_emul.*` (manager), `src/cpu/o3/*`
+     (PMU): respetar el de altek salvo que el usuario diga otra cosa.
+4. Compila en local si puedes (ver §4 para los detalles de compilación) y
+   sube la rama: `git push -u origin integration/rmc-direct`.
 
+En RMC no hay nada que unificar salvo cambios locales de altek o del PC
+(§2): si los hay, llévalos a la rama de trabajo con el usuario.
+
+---
+
+## 4. Compilar en altek sin pisar el gem5 actual
+
+La e2e usa por defecto `~/gap_gem5/gem5/build/X86/gem5.opt`, y puede haber
+experimentos del usuario u otras personas usándolo. Compila la integración
+**en un directorio aparte**:
+
+```bash
+ssh altek1.gap.upv.es
+GIT_LFS_SKIP_SMUDGE=1 git clone -b integration/rmc-direct https://github.com/jefemaestro302/gap_gem5 ~/gap_gem5_rmc
+cd ~/gap_gem5_rmc/gem5
+scons --version          # 4.7 funciona; 4.11 rompe los tests de configuración (ver abajo)
+scons build/X86/gem5.opt -j"$(nproc)" --ignore-style
+```
+
+Pregunta al usuario si en altek se compila en el nodo de login o con un
+trabajo SLURM, y sigue esa costumbre.
+
+- **scons 4.11** rompe la configuración de gem5 24.1: todos los tests de
+  enlace fallan con `Syntax error: "(" unexpected` y acaba en
+  `Did not find needed zlib`. Con `pip install --user "scons==4.7.0"` funciona.
+- Compilación completa con 4 núcleos: ~1 h. Solo cambian unos pocos `.cc`
+  respecto a `main`, pero en un directorio nuevo se compila todo.
+- Comprobación rápida de que es el gem5 correcto:
+  `strings build/X86/gem5.opt | grep -c rmcCheckpoint` (> 0).
+- **Ojo con el manager:** `exitImpl` (`src/sim/syscall_emul.cc`) cambia el
+  comportamiento del `exit` si existe `/tmp/.gem5_sentinel` en el nodo. Si una
+  prueba se queda colgada al terminar el programa, mira si ese fichero existe.
+
+---
+
+## 5. Pruebas en altek
+
+Desde el PC, con el repo RMC en `claude/confident-franklin-kra1vo` (o en la
+rama con lo que hayas unificado en §3) y el gem5 nuevo:
+
+```bash
+cd <repo RMC>
+git fetch origin && git checkout claude/confident-franklin-kra1vo && git pull
+# Ruta ABSOLUTA en altek: e2e_altek.sh la comprueba entre comillas simples, sin expandir ~
+export RMC_GEM5_REMOTE="$(ssh altek1.gap.upv.es 'printf %s "$HOME"')/gap_gem5_rmc/gem5/build/X86/gem5.opt"
+launch_scripts/e2e_altek.sh --restore direct --spec all 2>&1 | tee e2e_direct_$(date +%s).txt
+launch_scripts/e2e_altek.sh --restore loader --spec all 2>&1 | tee e2e_loader_$(date +%s).txt
+```
+
+Antes, las comprobaciones de siempre: SPEC compilado sin AVX en
+`<repo>/specs/benchspec/CPU` (si falta: `./generate_all_spec_checkpoints.sh
+--build-only`, en Docker; la guía detallada de recompilación, con label,
+config, compiladores y problemas típicos, está en el handoff anterior:
+`git show 3f67067:HANDOFF.md`, §1b), `setarch -R true` en el PC (fuera de Docker),
+`ssh altek1.gap.upv.es 'sinfo -s'` con la partición `compute`. Guía de la
+e2e y de cada prueba: [`docs/VERIFICACION_GEM5.md`](docs/VERIFICACION_GEM5.md).
+
+**Qué tiene que salir:**
+
+| Ejecución | Esperado | Referencia |
+|---|---|---|
+| `--restore direct --spec all` | `RESULTADO: EXITO`, 7 pruebas + 23 SPEC = **30/30** | nuevo |
+| `--restore loader --spec all` | **30/30**, igual que el job 151440 del 29-09-2026 | regresión del modo loader con el gem5 unificado |
+
+En directo, cada `gem5.log` tiene que mostrar
+`RMC: ... regions restored (...)`, `process N restored at the ROI` y
+`Checkpoint instalado en initState` o `instalados en initState`, y ningún
+`[loader]`.
+
+**Comparación entre modos** (para el informe, no bloquea el merge):
+
+- Instrucciones de ROI: en directo, ~21 menos por checkpoint (trampolín).
+- Tiempo: columna `(Ns)` de cada línea de `summary.txt`: en directo tiene
+  que bajar (desaparece la carga).
+- Un par de SPEC en O3 en ambos modos, para ver que el IPC es coherente
+  (en altek, desde `~/TFM/repositories/real_machine_checkpointing` con la
+  rama de trabajo y `GEM5_BIN=~/gap_gem5_rmc/gem5/build/X86/gem5.opt`; los
+  checkpoints `~/checkpoints/dump_<b>_r_noavx.ckpt` los deja
+  `regenerate_ckpt_noavx.sh --upload`, o usa los de `~/TFM/rmc_e2e/<ID>/ckpt/`):
   ```bash
-  mount -o loop cpu2017.iso /mnt
-  /mnt/install.sh -d <repo>/specs
+  RMC_RESTORE=loader launch_scripts/run_mixed.sh mcf_loader 10000000 timing ~/checkpoints/dump_mcf_r_noavx.ckpt
+  RMC_RESTORE=direct launch_scripts/run_mixed.sh mcf_direct 10000000 timing ~/checkpoints/dump_mcf_r_noavx.ckpt
+  RMC_RESTORE=direct RMC_WARMUP=5000000 launch_scripts/run_mixed.sh mcf_warm 10000000 atomic ~/checkpoints/dump_mcf_r_noavx.ckpt
+  launch_scripts/parse_roi_stats.py ~/TFM/m5out/mcf_loader ~/TFM/m5out/mcf_direct ~/TFM/m5out/mcf_warm
   ```
+  Pequeñas diferencias de IPC en
+  ROI cortos son normales: con el loader las cachés arrancan con lo que dejó
+  su `memcpy` y en directo arrancan frías (`--warmup` lo iguala).
+- SMT del TFM: `x86_mixed_2core.py` en ambos modos, que antes necesitaba
+  el parche de `BaseCPU.py`.
 
-  Después comprueba que `specs/config/gem5_noavx.cfg` sigue ahí (`git checkout specs/config`).
-- **Si el PC tiene una imagen `gem5_noavx_env` de otra procedencia,** el
-  script la reutiliza. Para usar la del repo: `docker rmi gem5_noavx_env:latest`.
-
-Comprobación rápida de un binario:
-
-```bash
-objdump -d specs/benchspec/CPU/505.mcf_r/run/run_base_train_test_compilacion-m64.0000/mcf_r_base.test_compilacion-m64 \
-  | grep -cE '%ymm|%zmm|vzeroupper|bextr|shlx|sarx|shrx'   # tiene que dar 0
-```
-
-## 2. Lanzar
-
-```bash
-launch_scripts/e2e_altek.sh --spec all 2>&1 | tee e2e_$(date +%s).txt; echo "exit=${PIPESTATUS[0]}"
-```
-
-- `--spec all` = todas las rate preparadas. Para un subconjunto:
-  `--spec mcf,lbm,xz`.
-- Para **solo SPEC,** sin las pruebas de `test/`: añade `--no-tests`.
-- **Recursos por tarea SLURM:** `--time` (03:00:00), `--mem` (16G) y
-  `--parallel` (8 tareas a la vez).
-- Para una ROI más larga: `--spec-insts 100000000`, y sube `--time` si hace
-  falta.
-- Duración aproximada:
-  - generación: unos segundos por benchmark (el volcado es a los 2-5 s);
-  - subida: con ~23 benchmarks puede pasar de varios GB de checkpoints;
-  - cada tarea: carga del checkpoint más 10 M instrucciones en CPU atomic,
-    minutos. Las pruebas de `test/` son las más largas (hasta ~1 h).
-- **Si se corta la terminal,** el trabajo sigue en altek. Para
-  reengancharse: `launch_scripts/e2e_altek.sh --attach <ID>`, con el `<ID>` =
-  `e2e_runs/<ID>` que se imprimió al lanzar.
-
-Aviso: con `--spec`, el script sube los directorios de ejecución del PC a
-`~/spec_cpu_2017/benchspec/CPU/<bench>/run/...` en altek y sobrescribe los
-ficheros con el mismo nombre. Si ahí hay algo que conservar, usa otro destino
-con `SPEC_REMOTE_DIR=...`.
-
-## 3. Interpretar
-
-Última línea:
-
-| Salida | Código | Significado |
-|---|---|---|
-| `RESULTADO: EXITO` | 0 | todas las pruebas pasan: el flujo funciona en altek |
-| `RESULTADO: FALLO` | 1 | alguna prueba falla; ver el resumen y `e2e_runs/<ID>/results/<prueba>/gem5.log` |
-| `RESULTADO: ERROR DE PREPARACION: ...` | 2 | no se llegó a simular; el mensaje dice qué paso falló |
-
-`e2e_runs/<ID>/results/summary.txt` tiene una línea `PASS`/`FAIL` por
-prueba. Un `spec_<b>` que pasa muestra
-`Instrucciones de ROI ejecutadas: 10000000`.
-
-Qué comprueba cada prueba: [`docs/VERIFICACION_GEM5.md`](docs/VERIFICACION_GEM5.md).
-
-## 4. Diagnóstico de fallos
-
-Revisa en este orden:
-1. `e2e_runs/<ID>/ckpt/<ckpt>.log`: salida de la generación.
-2. `.inspect`: loader recomendado, `heap_end`, cwd y FDs.
-3. `.meta`: condiciones de generación.
-4. `results/<prueba>/gem5.log`.
+**Diagnóstico** (además de la tabla de `docs/VERIFICACION_GEM5.md`):
 
 | Síntoma | Causa probable | Qué hacer |
 |---|---|---|
-| `setarch -R no funciona` | ejecutando dentro de Docker | lanzarlo en el host |
-| `gen_ckpt`: el binario tiene AVX/BMI2 | SPEC compilado sin `gem5_noavx.cfg` | recompilar en Docker (`generate_all_spec_checkpoints.sh`) |
-| `FAIL spec_X: no se genero el checkpoint en el PC: ...` | el motivo viene detrás; el detalle está en `ckpt/gen_X.err` y `ckpt/dump_X_r_noavx.ckpt.log` | según el motivo (filas siguientes) |
-| `[gen] FALLO ...: el programa termino sin generar el checkpoint` | la primera invocación del benchmark dura menos de 2 s, o el benchmark falló (ver `.log` y `.stdout`) | bajar el instante del volcado para ese benchmark con un caso en `bench_def()` de `benchmarks.sh` |
-| `FAIL X: sin resultado (la tarea SLURM no termino...)` | la tarea murió por falta de memoria o de tiempo | `results/slurm-<job>_<n>.out`; relanzar con más `--mem` o `--time` |
-| `benchmark desconocido o sin preparar` / `no hay benchmarks rate preparados` | ese benchmark no está compilado o preparado | `generate_all_spec_checkpoints.sh --build-only <b>` (Docker) |
-| `sbatch fallo` / partición inválida | partición | `--partition` según `sinfo` |
-| `el loader no llego al ROI` + `[loader] FATAL ... overlap` | checkpoint generado con ASLR, o loader equivocado | mirar `.meta` (`RMC_ASLR=off`) y la línea `**** Loader: ...` de gem5.log |
-| `[loader] WARNING: failed to restore fd ...` o `cannot chdir`, y luego falla el programa | un fichero de entrada no está en altek o la ruta no se remapeó | comparar los FDs y el `cwd=` de `.inspect` con `remapeos:` en `summary.txt` |
-| `panic: Unrecognized/invalid instruction` | camino AVX/SSE4 en glibc o en el binario | `.meta` debe tener `RMC_TUNABLES`; buscar la instrucción en el PC del panic con `objdump` |
-| `ROI terminado: 'exiting with last active thread context'` en SPEC | el benchmark murió o acabó dentro del ROI | leer la salida del programa en `gem5.log` (errores de fichero o `cwd`) |
-| `timeout` en el loader | brk movido muy lejos (loader no PIE con heap PIE) | comprobar que eligió `loader_pie` (bug 4) |
-| falla `static_malloc` o `smt2` con errores de heap | recorte del brk desde el trampolín en gem5: la parte que menos se ha podido probar sin gem5 | anotar el log; reproducir con `gem5dbg` de `docs/VERIFICACION_GEM5.md` (traza `SyscallVerbose` de `brk`) |
+| `--restore direct: este gem5 no tiene Process.rmcCheckpoint` | se está usando el gem5 viejo | revisar `RMC_GEM5_REMOTE` / `GEM5_BIN` |
+| `fatal: RMC: ... bad magic` / `format version` | checkpoint v1 o corrupto | regenerar con `gen_ckpt.sh` |
+| `fatal: RMC: ... lies outside the file` | checkpoint truncado | regenerar |
+| `warn: RMC: failed to restore fd N` / `the checkpoint ran in X but the process cwd is Y` | falta un remapeo PC→altek | igual que con el loader: `<ckpt>.remap`, `LOADER_OPTS` |
+| `panic: Someone allocated physical memory at VA ... without creating a VMA` | algo mapeó páginas fuera de `MemState` tras la restauración | **bug de la restauración directa**: anota el checkpoint y la traza con `--debug-flags=Rmc,Vma` y avisa al usuario |
+| `Port::takeOverFrom: old->isConnected()` al conmutar | gem5 sin `d32b11e1` | usar el gem5 de la integración |
+| `object 'X86O3CPU' has no attribute 'suspendContext'` | gem5 sin el export de `BaseCPU.py` | ídem |
+| falla en directo pero pasa con loader (o al revés) | diferencia real entre modos | **no hagas merge**; `run_st_timing.sh` del checkpoint en ambos modos con `--debug-flags=Rmc` y `SyscallVerbose`, y avisa al usuario |
 
-En altek todo queda en `~/TFM/rmc_e2e/<ID>/`: `repo/`, `ckpt/`, `results/` y
-`slurm-*.out`.
+---
 
-## 5. Qué no hacer
+## 6. Llevarlo a las ramas principales
 
-- No compilar SPEC en altek ni generar checkpoints en Docker.
-- No generar a mano con `LD_PRELOAD=...`; siempre con `gen_ckpt.sh`.
-- No reutilizar checkpoints v1 de `~/checkpoints`; se regeneran con
-  `launch_scripts/regenerate_ckpt_noavx.sh all`.
-- No versionar `e2e_runs/`: está en `.gitignore`.
-- Si hace falta un cambio de código, en una rama nueva desde `bug-fixes`, no
-  en `master`.
+**Solo si** las dos e2e dan 30/30 y el usuario ha visto el inventario (§2)
+y las decisiones de unificación (§3). Si algo falla, no hagas merge: informa.
 
-## 6. Qué devolver al usuario
+```bash
+# gap_gem5: main <- integration/rmc-direct
+cd gap_gem5
+git fetch origin
+git checkout main && git pull --ff-only origin main
+git merge --ff-only integration/rmc-direct || git merge --no-ff integration/rmc-direct
+#   (fast-forward si main no se ha movido; si no, merge commit, nunca rebase)
+git push origin main
 
-- Comando lanzado, `<ID>`, job de SLURM y código de salida.
-- `summary.txt` completo.
-- Por cada `FAIL`: la causa según la tabla de la sección 4 y las ~30 líneas
-  relevantes de su `gem5.log`.
-- Una tabla por benchmark SPEC: generado sí/no, PASS/FAIL y motivo. Incluye
-  los que no llegaron a entrar: la línea `sin directorio de ejecucion
-  preparado` del e2e y los que no compilaron en Docker.
-- Si todo pasa: las instrucciones de ROI de cada `spec_<b>` y el tiempo total.
+# RMC: master <- claude/confident-franklin-kra1vo (+ lo unificado)
+cd <repo RMC>
+git checkout master && git pull --ff-only origin master
+git merge --ff-only claude/confident-franklin-kra1vo || git merge --no-ff claude/confident-franklin-kra1vo
+git push origin master
+```
+
+- Si `main` o `master` avanzaron mientras tanto, el merge commit necesita
+  volver a compilar y a pasar al menos la e2e sin SPEC antes del push.
+- Si el push directo a la rama principal está protegido, abre un PR desde la
+  rama de integración con el resumen de §8 y avisa al usuario.
+- No borres `claude/confident-franklin-kra1vo`, `fix-smt-wakeup` ni
+  `executors`: que lo decida el usuario.
+
+## 7. Dejar altek con una sola instalación
+
+- RMC: `launch_scripts/install_on_altek.sh master` (clona o actualiza
+  `~/TFM/repositories/real_machine_checkpointing` y compila loaders y
+  `libckpt.so`).
+- gem5: pregunta al usuario cómo quiere quedarse:
+  a) sustituir su `~/gap_gem5` por el clon git de `main` (recomendado: así
+     altek y GitHub dejan de divergir; `sync_to_altek.sh` deja de hacer falta
+     o se usa solo para probar cambios), o
+  b) mantener el rsync y sincronizar `main` desde el PC.
+  En ambos casos, recompilar y comprobar
+  `strings .../gem5.opt | grep -c rmcCheckpoint`. No toques el `~/gap_gem5`
+  de otros usuarios (`mapecfer`...).
+
+## 8. Qué devolver al usuario
+
+- Tabla del inventario (§2) y qué se decidió con cada diferencia (§3).
+- Commit/rama de la integración de `gap_gem5` y cómo se compiló en altek.
+- Para cada e2e: comando, `<ID>`, job de SLURM, código de salida y
+  `summary.txt` completo; por cada `FAIL`, la causa (tablas de §5 y de
+  `docs/VERIFICACION_GEM5.md`) y ~30 líneas relevantes de su `gem5.log`.
+- Tabla por benchmark SPEC: PASS/FAIL en cada modo, instrucciones de ROI y
+  segundos en cada modo.
+- La comparación de IPC de `run_mixed.sh` (§5).
+- Si se hizo el merge: hashes de `main` y `master` resultantes. Si no, por qué.
+- Estado final de altek (§7).
