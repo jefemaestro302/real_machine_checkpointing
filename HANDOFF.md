@@ -1,12 +1,24 @@
 # HANDOFF: validar la restauración directa en altek, unificar versiones y llevarlo a las ramas principales
 
-> **Estado: completado el 29-09-2026.** e2e 30/30 en ambos modos en altek
-> (jobs 151470 directa / 151500 loader) con `gap_gem5@8a09b7f`
-> (`integration/rmc-direct`); merge a `master` (RMC) y `main` (`gap_gem5`).
-> Resultados y la diferencia de IPC con el loader (coloreado de páginas):
-> [`docs/RESTAURACION_DIRECTA.md`](docs/RESTAURACION_DIRECTA.md#validacion).
-> Pendiente: §7 (instalación única en altek; la clave SSH de altek no tiene
-> acceso a `jefemaestro302/gap_gem5`).
+> **Estado: completado el 29-09-2026.** Todo hecho y validado; no queda
+> trabajo pendiente de este handoff.
+>
+> - e2e 30/30 en ambos modos en altek (jobs 151470 directa / 151500 loader) y
+>   2-core en ambos modos (job 151533). e2e final con la instalación por
+>   defecto de altek (`~/gap_gem5`): 30/30, `e2e_runs/20260929_212042`.
+> - Merge (fast-forward) a `master` de RMC (`573de60`) y a `main` de
+>   `gap_gem5` (`8a09b7f`; luego `2d46ea2` añade `gem5/compile_altek.sh`).
+>   Las ramas de trabajo `claude/confident-franklin-kra1vo` (RMC) y
+>   `integration/rmc-direct` (`gap_gem5`) se borraron tras fusionarse.
+>   `fix-smt-wakeup` y `executors` se conservan (contenido sin fusionar).
+> - Altek con una sola instalación de cada repo: RMC en
+>   `~/TFM/repositories/real_machine_checkpointing` (`install_on_altek.sh
+>   master`) y `~/gap_gem5` como clon git de `main` (clave de despliegue
+>   propia, alias SSH `github-gapgem5-rmc`). Recompilar en el nodo de login
+>   con `gem5/compile_altek.sh`. Se borraron `~/gap_gem5_old` y
+>   `~/gap_gem5_rmc`.
+> - Resultados y la diferencia de IPC con el loader (coloreado de páginas):
+>   [`docs/RESTAURACION_DIRECTA.md`](docs/RESTAURACION_DIRECTA.md#validacion).
 
 Para una instancia (persona o agente) que trabaja **en el PC del usuario**, con
 acceso ssh a altek. Afecta a dos repos:
