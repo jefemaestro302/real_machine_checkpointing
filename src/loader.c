@@ -443,6 +443,14 @@ static void restore_and_jump(restore_ctx_t *ctx)
 
     if (ctx->barrier_n > 1) smt_barrier(ctx);
 
+    /* The loader's glibc startup did set_tid_address(&its TCB->tid). That
+     * TCB lives in the loader's own break, which the trampoline may unmap
+     * (fix_brk) or the restored regions may cover. At exit the kernel (or
+     * gem5, which aborts with "writeBlob failed" if the page is gone) would
+     * write 0 there and futex-wake it. The target is single-threaded after
+     * restore and nobody waits on that futex: clear it. */
+    syscall(SYS_set_tid_address, NULL);
+
     log_str("[loader] Setting FS base and jumping to ROI\n");
     if (ctx->fs_base) {
         syscall(158, 0x1002, ctx->fs_base);
